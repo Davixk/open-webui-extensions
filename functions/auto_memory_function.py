@@ -7,6 +7,7 @@ author_url: https://nokodo.net
 repository_url: https://nokodo.net/github/open-webui-extensions
 version: 0.4.3
 required_open_webui_version: >= 0.5.0
+funding_url: https://ko-fi.com/nokodo
 """
 
 import ast
