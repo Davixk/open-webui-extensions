@@ -8,11 +8,6 @@ You can find the latest version of each extension on [openwebui.com](https://ope
 
 ### Auto Memory Function
 
-**Version**: 0.4.3  
-**Required Open WebUI Version**: >= 0.5.0  
-**Author**: nokodo, based on devve  
-**Website**: [nokodo.net](https://nokodo.net)
-
 Automatically identifies and stores valuable information from chats as Memories in Open WebUI. This extension analyzes conversations and extracts key details to remember for future interactions.
 
 #### Features:
