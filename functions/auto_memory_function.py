@@ -5,7 +5,7 @@ description: Automatically identify and store valuable information from chats as
 author_email: nokodo@nokodo.net
 author_url: https://nokodo.net
 repository_url: https://nokodo.net/github/open-webui-extensions
-version: 0.4.4
+version: 0.4.5
 required_open_webui_version: >= 0.5.0
 funding_url: https://ko-fi.com/nokodo
 """
@@ -34,14 +34,14 @@ STRINGIFIED_MESSAGE_TEMPLATE = "{role}: ```{content}```"
 
 IDENTIFY_MEMORIES_PROMPT = """\
 You are helping maintain a collection of the User's Memories—like individual “journal entries,” each automatically timestamped upon creation or update.
-You will be provided with the last few messages from a conversation, with the last message being the most recent. Your job is to decide which details within the last User message are worth saving long-term as separate Memory entries.
+You will be provided with the last few messages from a conversation, with the last message being the most recent. Your job is to decide which details within the last User message (-2) are worth saving long-term as separate Memory entries.
 
 ** Key Instructions **
-1. Identify new or changed personal details from the User's **latest** message only. Older user messages may appear for context; do not re-store older facts unless explicitly repeated or modified in the last User message.
-2. If the User’s newest message contradicts an older statement (e.g., “I love oranges” vs. “I hate oranges”), extract only the updated info (“User hates oranges”).
+1. Identify new or changed personal details from the User's **latest** message (-2) only. Older user messages may appear for context; do not re-store older facts unless explicitly repeated or modified in the last User message (-2).
+2. If the User’s newest message contradicts an older statement (e.g., message -4 says “I love oranges” vs. message -2 says “I hate oranges”), extract only the updated info (“User hates oranges”).
 3. Think of each Memory as a single “fact” or statement. Never combine multiple facts into one Memory. If the User mentions multiple distinct items, break them into separate entries.
 4. Your goal is to capture anything that might be relevant or valuable for the AI to remember about the User, to personalize and enrich future interactions.
-5. If the User explicitly requests to “remember” something, always include it.
+5. If the User explicitly requests to “remember” something in their latest message (-2), always include it.
 6. Avoid storing short-term or trivial details (e.g. “I’m reading this question right now”).
 7. Return your result as a Python list of strings, **each string representing a separate Memory**. If no relevant info is found, **only** return an empty list (`[]`). No explanations, just the list.
 
@@ -50,10 +50,10 @@ You will be provided with the last few messages from a conversation, with the la
 ### Examples
 
 **Example 1 - 4 messages**  
-- user: I love oranges 😍
-- assistant: That's great! 🍊 I love oranges too!
-- user: Actually, I hate oranges 😂
-- assistant: omg you LIAR 😡
+-4. user: ```I love oranges 😍```
+-3. assistant: ```That's great! 🍊 I love oranges too!```
+-2. user: ```Actually, I hate oranges 😂```
+-1. assistant: ```omg you LIAR 😡```
 
 **Analysis**  
 - The last user message states a new personal fact: “User hates oranges.”  
@@ -65,8 +65,8 @@ You will be provided with the last few messages from a conversation, with the la
 ```
 
 **Example 2 - 2 messages**
-- user: I work as a junior data analyst. Please remember that my big presentation is on March 15.
-- assistant: Got it! I'll make a note of that.
+-2. user: I work as a junior data analyst. Please remember that my big presentation is on March 15.
+-1. assistant: Got it! I'll make a note of that.
 
 **Analysis**
 - The user provides two new pieces of information: their profession and the date of their presentation.
@@ -77,20 +77,33 @@ You will be provided with the last few messages from a conversation, with the la
 ```
 
 **Example 3 - 5 messages**
-- assistant: Oh yeah, absolutely! It tastes almost like Nutella 🍫
-- user: OMG I love nutella so much! 🍫
-- assistant: Nutella is amazing! 😍
-- user: Soo, remember how a week ago I had bought a new TV?
-- assistant: Yes, I remember that. What about it?
-- user: well, today it broke down 😭
+-5 assistant: Nutella is amazing! 😍
+-4 user: Soo, remember how a week ago I had bought a new TV?
+-3. assistant: Yes, I remember that. What about it?
+-2. user: well, today it broke down 😭
+-1. assistant: Oh no! That's terrible!
 
 **Analysis**
-- The only relevant message is the last one, which provides new information about the TV breaking down. The previous messages provide context over what the user was talking about. The rest of the messages are not relevant.
+- The only relevant message is the last User message (-2), which provides new information about the TV breaking down. The previous messages (-3, -4) provide context over what the user was talking about. The rest of the messages (-5) are not relevant.
 
 **Correct Output**
 ```
 ["User's TV they bought a week ago broke down today"]
-```"""
+```
+
+**Example 4 - 3 messages**
+-3. assistant: I'm a big fan of chocolate ice cream!
+-2. user: Oh yeah, I remember you told me about that.
+-1. assistant: I can't get enough of it! 🍦
+
+**Analysis**
+- No relevant information is provided in the User's message (-2). The assistant's messages (-3, -1) are not relevant to the User's personal details.
+
+**Correct Output**
+```
+[]
+```\
+"""
 
 CONSOLIDATE_MEMORIES_PROMPT = """You are maintaining a set of “Memories” for a user, similar to journal entries. Each memory has:
 - A "fact" (a string describing something about the user or a user-related event).
