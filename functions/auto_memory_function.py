@@ -5,7 +5,7 @@ description: Automatically identify and store valuable information from chats as
 author_email: nokodo@nokodo.net
 author_url: https://nokodo.net
 repository_url: https://nokodo.net/github/open-webui-extensions
-version: 0.4.3
+version: 0.4.4
 required_open_webui_version: >= 0.5.0
 funding_url: https://ko-fi.com/nokodo
 """
@@ -30,7 +30,7 @@ from open_webui.routers.memories import (
     QueryMemoryForm,
 )
 
-STRINGIFIED_MESSAGE_TEMPLATE = "{role}: {content}"
+STRINGIFIED_MESSAGE_TEMPLATE = "{role}: ```{content}```"
 
 IDENTIFY_MEMORIES_PROMPT = """\
 You are helping maintain a collection of the User's Memories—like individual “journal entries,” each automatically timestamped upon creation or update.
@@ -298,21 +298,25 @@ class Filter:
 
         # Process user message for memories
         if len(body["messages"]) >= 2:
-            stringified_messages = []
-            for i in range(1, self.user_valves.messages_to_consider + 1):
-                try:
-                    # Check if we have enough messages to safely access this index
-                    if i <= len(body["messages"]):
-                        message = body["messages"][-i]
-                        stringified_message = STRINGIFIED_MESSAGE_TEMPLATE.format(
-                            role=message["role"], content=message["content"]
-                        )
-                        stringified_messages.append(stringified_message)
-                    else:
-                        break
-                except Exception as e:
-                    print(f"Error stringifying messages: {e}")
-            memories = await self.identify_memories("\n".join(stringified_messages))
+            if self.user_valves.use_legacy_mode:
+                prompt_string = body["messages"][-2]["content"]
+            else:
+                stringified_messages = []
+                for i in range(1, self.user_valves.messages_to_consider + 1):
+                    try:
+                        # Check if we have enough messages to safely access this index
+                        if i <= len(body["messages"]):
+                            message = body["messages"][-i]
+                            stringified_message = STRINGIFIED_MESSAGE_TEMPLATE.format(
+                                role=message["role"], content=message["content"]
+                            )
+                            stringified_messages.append(stringified_message)
+                        else:
+                            break
+                    except Exception as e:
+                        print(f"Error stringifying messages: {e}")
+                prompt_string = "\n".join(stringified_messages)
+            memories = await self.identify_memories(prompt_string)
             if (
                 memories.startswith("[")
                 and memories.endswith("]")
