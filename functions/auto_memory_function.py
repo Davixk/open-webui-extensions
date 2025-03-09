@@ -5,7 +5,7 @@ description: Automatically identify and store valuable information from chats as
 author_email: nokodo@nokodo.net
 author_url: https://nokodo.net
 repository_url: https://nokodo.net/github/open-webui-extensions
-version: 0.4.6
+version: 0.4.7
 required_open_webui_version: >= 0.5.0
 funding_url: https://ko-fi.com/nokodo
 """
@@ -34,15 +34,15 @@ STRINGIFIED_MESSAGE_TEMPLATE = "-{index}. {role}: ```{content}```"
 
 IDENTIFY_MEMORIES_PROMPT = """\
 You are helping maintain a collection of the User's Memories—like individual “journal entries,” each automatically timestamped upon creation or update.
-You will be provided with the last few messages from a conversation, with the last message being the most recent. Your job is to decide which details within the last User message (-2) are worth saving long-term as separate Memory entries.
+You will be provided with the last 2 or more messages from a conversation. Your job is to decide which details within the last User message (-2) are worth saving long-term as Memory entries.
 
 ** Key Instructions **
 1. Identify new or changed personal details from the User's **latest** message (-2) only. Older user messages may appear for context; do not re-store older facts unless explicitly repeated or modified in the last User message (-2).
 2. If the User’s newest message contradicts an older statement (e.g., message -4 says “I love oranges” vs. message -2 says “I hate oranges”), extract only the updated info (“User hates oranges”).
 3. Think of each Memory as a single “fact” or statement. Never combine multiple facts into one Memory. If the User mentions multiple distinct items, break them into separate entries.
-4. Your goal is to capture anything that might be relevant or valuable for the AI to remember about the User, to personalize and enrich future interactions.
-5. If the User explicitly requests to “remember” something in their latest message (-2), always include it.
-6. Avoid storing short-term or trivial details (e.g. “I’m reading this question right now”).
+4. Your goal is to capture anything that might be valuable for the "assistant" to remember about the User, to personalize and enrich future interactions.
+5. If the User explicitly requests to “remember” or note down something in their latest message (-2), always include it.
+6. Avoid storing short-term or trivial details (e.g. user: “I’m reading this question right now”, user: "I just woke up!", user: "Oh yeah, I saw that on TV the other day").
 7. Return your result as a Python list of strings, **each string representing a separate Memory**. If no relevant info is found, **only** return an empty list (`[]`). No explanations, just the list.
 
 ---
@@ -84,7 +84,9 @@ You will be provided with the last few messages from a conversation, with the la
 -1. assistant: Oh no! That's terrible!
 
 **Analysis**
-- The only relevant message is the last User message (-2), which provides new information about the TV breaking down. The previous messages (-3, -4) provide context over what the user was talking about. The rest of the messages (-5) are not relevant.
+- The only relevant message is the last User message (-2), which provides new information about the TV breaking down.
+- The previous messages (-3, -4) provide context over what the user was talking about.
+- The remaining message (-5) is irrelevant.
 
 **Correct Output**
 ```
@@ -97,7 +99,8 @@ You will be provided with the last few messages from a conversation, with the la
 -1. assistant: 😂 Sure you can, Joe!
 
 **Analysis**
-- The User message (-2) is clearly sarcastic and not meant to be taken literally. It does not contain any relevant information to store. The other messages (-3, -1) are not relevant as they're not about the User.
+- The User message (-2) is clearly sarcastic and not meant to be taken literally. It does not contain any relevant information to store.
+- The other messages (-3, -1) are not relevant as they're not about the User.
 
 **Correct Output**
 ```
@@ -203,7 +206,8 @@ Make sure your final answer is just the array, with no added commentary.
 ### **Final Reminder**
 - You’re only seeing these Memories because our system guessed they might overlap. If they’re not exact duplicates or direct conflicts, keep them all.  
 - Always produce a **Python list of strings**—each string is a separate memory/fact.  
-- Do not add any explanation or disclaimers—just the final list."""
+- Do not add any explanation or disclaimers—just the final list.\
+"""
 
 LEGACY_IDENTIFY_MEMORIES_PROMPT = """You will be provided with a piece of text submitted by a user. Analyze the text to identify any information about the user that could be valuable to remember long-term. Do not include short-term information, such as the user's current query. You may infer interests based on the user's text.
 Extract only the useful information about the user and output it as a Python list of key details, where each detail is a string. Include the full context needed to understand each piece of information. If the text contains no useful information about the user, respond with an empty list ([]). Do not provide any commentary. Only provide the list.
@@ -273,7 +277,7 @@ class Filter:
             description="User-specific openai compatible endpoint (overrides global)",
         )
         model: Optional[str] = Field(
-            default=None, description="User-specific model to use (overrides global)"
+            default=None, description="User-specific model to use (overrides global). An intelligent model is highly recommended, as it will be able to better understand the context of the conversation."
         )
         api_key: Optional[str] = Field(
             default=None, description="User-specific API key (overrides global)"
