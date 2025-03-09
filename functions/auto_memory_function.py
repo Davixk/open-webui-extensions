@@ -5,7 +5,7 @@ description: Automatically identify and store valuable information from chats as
 author_email: nokodo@nokodo.net
 author_url: https://nokodo.net
 repository_url: https://nokodo.net/github/open-webui-extensions
-version: 0.4.5
+version: 0.4.6
 required_open_webui_version: >= 0.5.0
 funding_url: https://ko-fi.com/nokodo
 """
@@ -30,7 +30,7 @@ from open_webui.routers.memories import (
     QueryMemoryForm,
 )
 
-STRINGIFIED_MESSAGE_TEMPLATE = "{role}: ```{content}```"
+STRINGIFIED_MESSAGE_TEMPLATE = "-{index}. {role}: ```{content}```"
 
 IDENTIFY_MEMORIES_PROMPT = """\
 You are helping maintain a collection of the User's Memories—like individual “journal entries,” each automatically timestamped upon creation or update.
@@ -92,12 +92,12 @@ You will be provided with the last few messages from a conversation, with the la
 ```
 
 **Example 4 - 3 messages**
--3. assistant: I'm a big fan of chocolate ice cream!
--2. user: Oh yeah, I remember you told me about that.
--1. assistant: I can't get enough of it! 🍦
+-3. assistant: As an AI assistant, I can perform extremely complex calculations in seconds.
+-2. user: Oh yeah? I can do that with my eyes closed!
+-1. assistant: 😂 Sure you can, Joe!
 
 **Analysis**
-- No relevant information is provided in the User's message (-2). The assistant's messages (-3, -1) are not relevant to the User's personal details.
+- The User message (-2) is clearly sarcastic and not meant to be taken literally. It does not contain any relevant information to store. The other messages (-3, -1) are not relevant as they're not about the User.
 
 **Correct Output**
 ```
@@ -245,8 +245,8 @@ class Filter:
             description="openai compatible endpoint",
         )
         model: str = Field(
-            default="gpt-4o-mini",
-            description="Model to use to determine memory",
+            default="gpt-4o",
+            description="Model to use to determine memory. An intelligent model is highly recommended, as it will be able to better understand the context of the conversation.",
         )
         api_key: str = Field(
             default="", description="API key for OpenAI compatible endpoint"
@@ -321,7 +321,9 @@ class Filter:
                         if i <= len(body["messages"]):
                             message = body["messages"][-i]
                             stringified_message = STRINGIFIED_MESSAGE_TEMPLATE.format(
-                                role=message["role"], content=message["content"]
+                                index=i,
+                                role=message["role"],
+                                content=message["content"],
                             )
                             stringified_messages.append(stringified_message)
                         else:
