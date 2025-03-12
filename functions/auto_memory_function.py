@@ -5,7 +5,7 @@ description: Automatically identify and store valuable information from chats as
 author_email: nokodo@nokodo.net
 author_url: https://nokodo.net
 repository_url: https://nokodo.net/github/open-webui-extensions
-version: 0.4.7
+version: 0.4.8
 required_open_webui_version: >= 0.5.0
 funding_url: https://ko-fi.com/nokodo
 """
@@ -65,8 +65,8 @@ You will be provided with the last 2 or more messages from a conversation. Your 
 ```
 
 **Example 2 - 2 messages**
--2. user: I work as a junior data analyst. Please remember that my big presentation is on March 15.
--1. assistant: Got it! I'll make a note of that.
+-2. user: ```I work as a junior data analyst. Please remember that my big presentation is on March 15.```
+-1. assistant: ```Got it! I'll make a note of that.```
 
 **Analysis**
 - The user provides two new pieces of information: their profession and the date of their presentation.
@@ -77,11 +77,11 @@ You will be provided with the last 2 or more messages from a conversation. Your 
 ```
 
 **Example 3 - 5 messages**
--5 assistant: Nutella is amazing! 😍
--4 user: Soo, remember how a week ago I had bought a new TV?
--3. assistant: Yes, I remember that. What about it?
--2. user: well, today it broke down 😭
--1. assistant: Oh no! That's terrible!
+-5. assistant: ```Nutella is amazing! 😍```
+-4. user: ```Soo, remember how a week ago I had bought a new TV?```
+-3. assistant: ```Yes, I remember that. What about it?```
+-2. user: ```well, today it broke down 😭```
+-1. assistant: ```Oh no! That's terrible!```
 
 **Analysis**
 - The only relevant message is the last User message (-2), which provides new information about the TV breaking down.
@@ -94,9 +94,9 @@ You will be provided with the last 2 or more messages from a conversation. Your 
 ```
 
 **Example 4 - 3 messages**
--3. assistant: As an AI assistant, I can perform extremely complex calculations in seconds.
--2. user: Oh yeah? I can do that with my eyes closed!
--1. assistant: 😂 Sure you can, Joe!
+-3. assistant: ```As an AI assistant, I can perform extremely complex calculations in seconds.```
+-2. user: ```Oh yeah? I can do that with my eyes closed!```
+-1. assistant: ```😂 Sure you can, Joe!```
 
 **Analysis**
 - The User message (-2) is clearly sarcastic and not meant to be taken literally. It does not contain any relevant information to store.
