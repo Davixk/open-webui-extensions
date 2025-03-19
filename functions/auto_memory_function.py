@@ -1,6 +1,6 @@
 """
 title: Auto Memory (post 0.5)
-author: nokodo, based on devve
+author: @nokodo, based on @devve
 description: Automatically identify and store valuable information from chats as Memories.
 author_email: nokodo@nokodo.net
 author_url: https://nokodo.net
