@@ -1,4 +1,4 @@
-# 🔎 Auto Web Search (Open WebUI Tool)
+# 🔎 Auto Web Search
 
 A lightweight, native-first web search tool for Open WebUI. It plugs into your chats to fetch current, factual information and returns clean, citeable results — no external services required.
 
@@ -12,79 +12,51 @@ A lightweight, native-first web search tool for Open WebUI. It plugs into your c
 -   🔎 Native web search through Open WebUI’s native `Web Search`
 -   ➕ Accepts multiple queries in one call
 -   📡 Emits status updates and citeable snippets as results stream in
--   🧾 Structured JSON response
+-   🧾 Structured summary of results
 
 ## 🧭 How it works
 
-The tool exposes a single function, `web_search`, that takes an array of search queries. Under the default `native` mode, it uses Open WebUI’s built-in search and retrieval pipeline and streams:
+Ask a question in chat that requires current or factual information. Under the default `native` mode, the tool uses Open WebUI’s built-in search and retrieval pipeline and streams:
 
 1. ⏳ A short status message (e.g., “searching the web for: …”)
 2. 🔗 One citation event per matched document (source + snippet)
-3. ✅ A completion status with a compact JSON payload you can reuse or display
+3. ✅ A completion status with a compact summary you can reuse or display
 
-## 🛠️ Installation
+## 🚀 Installation
 
-This tool is part of the extension repo and relies on Open WebUI APIs. Ensure your Open WebUI instance is running (>= 0.6.0). The only Python dependency added by this tool is `aiohttp`.
-
-### 📦 Requirements
-
--   Open WebUI >= 0.6.0
--   Python environment consistent with your Open WebUI deployment
--   Python package: `aiohttp`
-
-### ⚙️ Quick setup
-
--   Place `auto_web_search.py` under `tools/` in your Open WebUI extensions folder (already done in this repo).
--   Make sure your environment can import from `open_webui`.
-
-If you need to install `aiohttp` in your environment:
-
-```powershell
-pip install aiohttp
-```
+1. Make sure your Open WebUI is version `0.6.0` or newer.
+2. Click on _GET_ to add the extension to your Open WebUI deployment.
+3. Configure settings (see below).
 
 ## ▶️ Usage
 
-The tool registers itself with a single function you can call from your assistant runtime.
+Once installed and enabled, this tool is available inside chats. Simply ask your question — the tool will:
 
--   Function name: `web_search`
--   Parameter: `search_queries` (array of 1–5 strings)
--   Returns: JSON string with status, result_count, and results (each result includes `source` and `content`)
+-   Search the web using Open WebUI’s native pipeline
+-   Stream status updates and citations back into the chat
+-   Summarize results when complete
 
-Example shape:
+### 🔔 What you'll see
 
-```json
-{
-	"status": "web search completed successfully!",
-	"result_count": 3,
-	"results": [
-		{ "source": "https://example.com/post", "content": "Snippet text…" },
-		{ "source": "https://another.com/page", "content": "Snippet text…" }
-	]
-}
-```
-
-### 🔔 Events emitted
-
--   Status events: progress updates and completion
--   Citation events: one per result, containing source metadata and a content snippet
-
-This makes it easy to render live search activity and include citations in model responses.
+-   Progress updates (e.g., “searching the web for…”) and a completion message
+-   Citations for each result with source and snippet, inline in the chat
 
 ## ⚙️ Configuration
 
-You can adjust behavior via the `Valves` model on the tool:
+Configure everything from the Open WebUI extension settings — no code required.
 
--   `SEARCH_MODE`: `"native"` | `"perplexica"` (default: `native`)
+| Setting                        | Description                                               | Default                             |
+| ------------------------------ | --------------------------------------------------------- | ----------------------------------- |
+| `SEARCH_MODE`                  | Search engine to use. Native is recommended.              | `native`                            |
+| `PERPLEXICA_BASE_URL`          | Base URL of your Perplexica server (legacy/optional).     | `http://host.docker.internal:3001`  |
+| `PERPLEXICA_OPTIMIZATION_MODE` | Perplexica strategy: `speed` or `balanced`.               | `balanced`                          |
+| `PERPLEXICA_CHAT_MODEL`        | Chat model used by the Perplexica pipeline.               | `gpt-5-chat-latest`                 |
+| `PERPLEXICA_EMBEDDING_MODEL`   | Embedding model used by the Perplexica pipeline.          | `bge-m3:latest`                     |
+| `OLLAMA_BASE_URL`              | Base URL for the Ollama provider when used by Perplexica. | `http://host.docker.internal:11434` |
 
-Legacy, optional parameters for the separate Perplexica flow (not needed for native mode):
+Tip: Keep `SEARCH_MODE` set to `native` for the cleanest, lowest-latency experience fully within Open WebUI.
 
--   `PERPLEXICA_BASE_URL` (default: `http://host.docker.internal:3001`)
--   `PERPLEXICA_OPTIMIZATION_MODE`: `"speed" | "balanced"` (default: `balanced`)
--   `PERPLEXICA_CHAT_MODEL` (default: `gpt-5-chat-latest`)
--   `PERPLEXICA_EMBEDDING_MODEL` (default: `bge-m3:latest`)
-
-> Tip: Keep `SEARCH_MODE` as `native` for the cleanest, lowest-latency experience fully within Open WebUI.
+Supports per-user overrides.
 
 ## 🎯 Good query patterns
 
@@ -103,10 +75,8 @@ Examples:
 -   No results returned
     -   Try narrower queries or add a second query variation
     -   Check that your Open WebUI has network access from its host
--   ImportError: cannot import `open_webui.*`
-    -   Ensure you are running inside the Open WebUI app environment or have its packages available
 -   Permission or user issues
-    -   The tool expects a valid `__user__` with an `id`; ensure your caller supplies it
+    -   The tool expects a valid user context in the UI; ensure you’re signed in and have permission to use extensions
 
 ## 🤝 Why this tool
 
