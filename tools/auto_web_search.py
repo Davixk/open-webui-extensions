@@ -1,0 +1,303 @@
+"""
+title: Auto Web Search
+author: @nokodo
+description: A tool for performing automated web searches.
+author_email: nokodo@nokodo.net
+author_url: https://nokodo.net
+funding_url: https://ko-fi.com/nokodo
+repository_url: https://nokodo.net/github/open-webui-extensions
+version: 0.1.0
+required_open_webui_version: >= 0.6.0
+requirements: aiohttp
+license: MIT
+"""
+
+import json
+from typing import Any, Literal, Optional, cast
+
+import aiohttp
+from open_webui.main import Request, app
+from open_webui.models.users import UserModel, Users
+from open_webui.routers.retrieval import SearchForm, process_web_search
+from pydantic import BaseModel, Field
+
+
+class Tools:
+    class Valves(BaseModel):
+        SEARCH_MODE: Literal["native", "perplexica"] = Field(
+            default="native",
+            description="Search mode (native or perplexica)",
+        )
+        PERPLEXICA_BASE_URL: str = Field(
+            default="http://host.docker.internal:3001",
+            description="Base URL for the Perplexica API",
+        )
+        PERPLEXICA_OPTIMIZATION_MODE: Literal["speed", "balanced"] = Field(
+            default="balanced",
+            description="Search optimization mode (speed or balanced)",
+        )
+        PERPLEXICA_CHAT_MODEL: str = Field(
+            default="gpt-5-chat-latest", description="Default chat model"
+        )
+        PERPLEXICA_EMBEDDING_MODEL: str = Field(
+            default="bge-m3:latest", description="Default embedding model"
+        )
+        OLLAMA_BASE_URL: str = Field(
+            default="http://host.docker.internal:11434",
+            description="Base URL for Ollama API",
+        )
+
+    def __init__(self):
+        self.valves = self.Valves()
+        self.tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "web_search",
+                    "description": "Search the web for factual information, current events, or specific topics. Only use this tool when a search query is explicitly needed or when the user asks for information that requires looking up current or factual data.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "search_queries": {
+                                "type": "array",
+                                "description": "An array of search query strings. Each is a clear, focused search term or question.",
+                                "items": {
+                                    "type": "string",
+                                    "title": "Search Query",
+                                    "description": "A clear, focused search term or question.",
+                                },
+                                "minItems": 1,
+                                "maxItems": 5,
+                            }
+                        },
+                        "required": ["search_queries"],
+                    },
+                },
+            }
+        ]
+
+    async def web_search(
+        self,
+        search_queries: list[str],
+        __event_emitter__: Any = None,
+        __user__: Optional[dict] = None,
+    ) -> str:
+        """Search the web for a query."""
+        if __user__ is None:
+            raise ValueError("User information is required")
+
+        search_mode = self.valves.SEARCH_MODE
+        user = Users.get_user_by_id(__user__["id"])
+        if user is None:
+            raise ValueError("User not found")
+
+        if search_mode == "perplexica":
+            return await perplexica_web_search(
+                search_queries,
+                base_url=self.valves.PERPLEXICA_BASE_URL,
+                optimization_mode=self.valves.PERPLEXICA_OPTIMIZATION_MODE,
+                chat_model=self.valves.PERPLEXICA_CHAT_MODEL,
+                embedding_model=self.valves.PERPLEXICA_EMBEDDING_MODEL,
+                emitter=__event_emitter__,
+                user=user,
+            )
+        elif search_mode == "native":
+            return await native_web_search(
+                search_queries, emitter=__event_emitter__, user=user
+            )
+        else:
+            raise ValueError(f"Unknown search mode: {search_mode}")
+
+
+async def native_web_search(
+    search_queries: list[str], emitter: Any, user: UserModel
+) -> str:
+    """Search using the native search engine."""
+    try:
+        await emit_status(
+            f"searching the web for: {', '.join(search_queries[:3])}",
+            emitter=emitter,
+        )
+
+        form = SearchForm.model_validate({"queries": search_queries})
+        result = await process_web_search(
+            request=await get_request(), form_data=form, user=user
+        )
+
+        items = cast(list[dict[str, Any]], result["docs"])  # type: ignore[index]
+        item_count = cast(int, result["loaded_count"])  # type: ignore[index]
+
+        search_results = cast(
+            list[dict[str, str]],
+            [
+                {
+                    "source": item["metadata"]["source"],
+                    "content": item["content"],
+                }
+                for item in items
+            ],
+        )
+
+        if emitter:
+            for sr in search_results:
+                await emitter(
+                    {
+                        "type": "citation",
+                        "data": {
+                            "document": [sr["content"]],
+                            "metadata": [{"source": sr["source"]}],
+                            "source": {"name": sr["source"]},
+                        },
+                    }
+                )
+
+        await emit_status(
+            f"found {item_count} result(s)",
+            status="complete",
+            done=True,
+            emitter=emitter,
+        )
+
+        return json.dumps(
+            {
+                "status": "web search completed successfully!",
+                "result_count": item_count,
+                "results": search_results,
+            }
+        )
+
+    except Exception as e:
+        await emit_status(
+            "encountered an error while searching the web",
+            status="error",
+            done=True,
+            emitter=emitter,
+        )
+        return json.dumps(
+            {
+                "status": "web search failed",
+                "results": [],
+                "error": str(e),
+            }
+        )
+
+
+async def perplexica_web_search(
+    search_queries: list[str],
+    base_url: str,
+    optimization_mode: str,
+    chat_model: str,
+    embedding_model: str,
+    emitter: Any,
+    user: UserModel,
+) -> Any:
+    """Search using the Perplexica API."""
+    # fallback for legacy code
+    query = search_queries[0]
+
+    await emit_status(f"Initiating search for: {query}", emitter=emitter)
+
+    # Fixed: Use proper nested structure like the working Pipe
+    payload = {
+        "focusMode": "webSearch",
+        "optimizationMode": optimization_mode,
+        "query": query,
+        "chatModel": {
+            "provider": "ollama",
+            "name": chat_model,
+        },
+        "embeddingModel": {
+            "provider": "ollama",
+            "name": embedding_model,
+        },
+        "history": [],  # Changed from None to empty list
+    }
+
+    # Fixed: Clean up request body like the working Pipe
+    payload = {k: v for k, v in payload.items() if v is not None}
+    payload = {k: v for k, v in payload.items() if v != "default"}
+
+    try:
+        await emit_status("Sending request to Perplexica API", emitter=emitter)
+
+        # Fixed: Use aiohttp instead of requests for proper async handling
+        headers = {"Content-Type": "application/json"}
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{base_url.rstrip('/')}/api/search",
+                json=payload,
+                headers=headers,
+            ) as response:
+                response.raise_for_status()
+                result = await response.json()
+
+        # Emit main content as citation
+        if emitter:
+            await emitter(
+                {
+                    "type": "citation",
+                    "data": {
+                        "document": [result["message"]],
+                        "metadata": [{"source": "Perplexica Search"}],
+                        "source": {"name": "Perplexica"},
+                    },
+                }
+            )
+
+        # Emit each source as a citation
+        if result.get("sources") and emitter:
+            for source in result["sources"]:
+                await emitter(
+                    {
+                        "type": "citation",
+                        "data": {
+                            "document": [source["pageContent"]],
+                            "metadata": [{"source": source["metadata"]["url"]}],
+                            "source": {"name": source["metadata"]["title"]},
+                        },
+                    }
+                )
+
+        await emit_status(
+            "Search completed successfully",
+            status="complete",
+            done=True,
+            emitter=emitter,
+        )
+
+        # Format response with citations
+        response_text = f"{result['message']}\n\nSources:\n"
+        response_text += "- Perplexica Search\n"
+        for source in result.get("sources", []):
+            response_text += (
+                f"- {source['metadata']['title']}: {source['metadata']['url']}\n"
+            )
+        return response_text
+
+    except Exception as e:
+        error_msg = f"Error performing search: {str(e)}"
+        await emit_status(error_msg, status="error", done=True, emitter=emitter)
+        return error_msg
+
+
+async def emit_status(
+    description: str,
+    emitter: Any,
+    status: str = "in_progress",
+    done: bool = False,
+):
+    if emitter:
+        await emitter(
+            {
+                "type": "status",
+                "data": {
+                    "description": description,
+                    "status": status,
+                    "done": done,
+                },
+            }
+        )
+
+
+async def get_request() -> Request:
+    return Request(scope={"type": "http", "app": app})
