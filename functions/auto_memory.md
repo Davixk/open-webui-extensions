@@ -12,19 +12,19 @@ It stores these as separate memories, so future AI interactions stay personal an
 
 You get:
 
--   Seamless journaling of your important info
--   Smarter, context-rich AI assistance
--   No more “please remember X” (unless you _want_ to!)
+- Seamless journaling of your important info
+- Smarter, context-rich AI assistance
+- No more “please remember X” (unless you _want_ to!)
 
 <br>
 
 ## 💾 How It Works
 
--   **Auto-extracts** new or changed "facts" from recent user messages
--   **Stores each fact** separately in your Memory database
--   **Consolidates/conflicts** are resolved: more recent info replaces the old
--   Optionally can save assistant responses as memories (`save_assistant_response`)
--   Uses advanced LLMs (like GPT-4o) to understand context and nuance
+- **Auto-extracts** new or changed "facts" from recent user messages
+- **Stores each fact** separately in your Memory database
+- **Consolidates/conflicts** are resolved: more recent info replaces the old
+- Optionally can save assistant responses as memories (`save_assistant_response`)
+- Uses advanced LLMs (like GPT-4o) to understand context and nuance
 
 ---
 
@@ -40,17 +40,16 @@ You get:
 
 Configure via the Open WebUI extension settings or directly in code:
 
-| Setting                   | Description                                                        | Default                  |
-| ------------------------- | ------------------------------------------------------------------ | ------------------------ |
-| `openai_api_url`          | OpenAI-compatible API endpoint                                     | `https://api.openai.com` |
-| `model`                   | LLM model for memory identification                                | `gpt-4o`                 |
-| `api_key`                 | API key for the chosen endpoint                                    | _(empty)_                |
-| `related_memories_n`      | Number of related memories to check for consolidation              | `5`                      |
-| `related_memories_dist`   | Similarity distance threshold for related memories                 | `0.75`                   |
-| `save_assistant_response` | Also auto-save assistant replies as memories                       | `false`                  |
-| `use_legacy_mode`         | Use simplified old prompts & only last user message for extraction | `false`                  |
-| `messages_to_consider`    | How many recent messages to consider (user+assistant)              | `4`                      |
-| `show_status`             | Display memory save status on UI                                   | `true`                   |
+| Setting                   | Description                                           | Default                  |
+| ------------------------- | ----------------------------------------------------- | ------------------------ |
+| `openai_api_url`          | OpenAI-compatible API endpoint                        | `https://api.openai.com` |
+| `model`                   | LLM model for memory identification                   | `gpt-4o`                 |
+| `api_key`                 | API key for the chosen endpoint                       | _(empty)_                |
+| `related_memories_n`      | Number of related memories to check for consolidation | `5`                      |
+| `related_memories_dist`   | Similarity distance threshold for related memories    | `0.75`                   |
+| `save_assistant_response` | Also auto-save assistant replies as memories          | `false`                  |
+| `messages_to_consider`    | How many recent messages to consider (user+assistant) | `4`                      |
+| `show_status`             | Display memory save status on UI                      | `true`                   |
 
 Supports per-user overrides.
 
@@ -58,10 +57,10 @@ Supports per-user overrides.
 
 ## 🧠 Memory Extraction Logic
 
--   New or changed facts from User's latest message are saved.
--   Explicit "please remember..." requests always create a Memory.
--   Avoids duplicates & merges conflicts by keeping only the latest.
--   Filters out ephemeral/trivial/short-term details.
+- New or changed facts from User's latest message are saved.
+- Explicit "please remember..." requests always create a Memory.
+- Avoids duplicates & merges conflicts by keeping only the latest.
+- Filters out ephemeral/trivial/short-term details.
 
 ### Example
 
@@ -87,9 +86,9 @@ See full logic and more cases in code (`IDENTIFY_MEMORIES_PROMPT`, etc).
 ## 🧰 Extension Metadata
 
 ```
-title: Auto Memory (post 0.5)
-author: nokodo, based on devve
-version: 0.4.8
+title: Auto Memory
+author: nokodo
+version: 0.5.1
 required_open_webui_version: >= 0.5.0
 repository_url: https://nokodo.net/github/open-webui-extensions
 funding_url: https://ko-fi.com/nokodo
@@ -99,15 +98,15 @@ funding_url: https://ko-fi.com/nokodo
 
 ## 🙌 Credits
 
--   Created by [nokodo](https://nokodo.net)
--   Based on [@devve](https://openwebui.com/u/devve)’s original design
+- Created by [nokodo](https://nokodo.net)
+- Based on [@devve](https://openwebui.com/u/devve)’s original design
 
 ---
 
 ## 💖 Support & Feedback
 
--   [Open an Issue / Suggest Improvements](https://nokodo.net/github/open-webui-extensions)
--   [Buy me a coffee ☕](https://ko-fi.com/nokodo)
+- [Open an Issue / Suggest Improvements](https://nokodo.net/github/open-webui-extensions)
+- [Buy me a coffee ☕](https://ko-fi.com/nokodo)
 
 ---
 
