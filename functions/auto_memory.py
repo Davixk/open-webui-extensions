@@ -5,7 +5,7 @@ description: Automatically identify and store valuable information from chats as
 author_email: nokodo@nokodo.net
 author_url: https://nokodo.net
 repository_url: https://nokodo.net/github/open-webui-extensions
-version: 0.5.1
+version: 0.5.2
 required_open_webui_version: >= 0.5.0
 funding_url: https://ko-fi.com/nokodo
 """
@@ -35,14 +35,16 @@ IDENTIFY_MEMORIES_PROMPT = """\
 You are helping maintain a collection of Memories— individual “journal entries”, each automatically timestamped upon creation or update.
 You will be provided with the last several messages from a conversation (displayed with negative indices; -1 is the most recent overall message). Your job is to decide which details within the last User message (-2) are worth saving long-term as Memory entries.
 
-** Key Instructions **
+<key_instructions>
 1. Identify new or changed personal details from the User's **latest** message (-2) only. Older user messages may appear for context; do not re-store older facts unless explicitly repeated or modified in the last User message (-2).
 2. If the User’s newest message contradicts an older statement (e.g., message -4 says “I love oranges” vs. message -2 says “I hate oranges”), extract only the updated info (“User hates oranges”).
 3. Think of each Memory as a single “fact” or statement. Never combine multiple facts into one Memory. If the User mentions multiple distinct items, break them into separate entries.
-4. Your goal is to capture anything that might be valuable for the "assistant" to remember about the User, to personalize and enrich future interactions.
-5. If the User explicitly requests to “remember” or note down something in their latest message (-2), always include it.
-6. Avoid storing short-term or trivial details (e.g. user: “I’m reading this question right now”, user: "I just woke up!", user: "Oh yeah, I saw that on TV the other day").
-7. Return your result as a Python list of strings, **each string representing a separate Memory**. If no relevant info is found, **only** return an empty list (`[]`). No explanations, just the list.
+4. Link related Memories together by including brief, minimal references to other Memories when relevant, to help semantically connect them. For example, if the User mentions a new detail about a previously noted event or preference, include a short reference to that earlier Memory to maintain context.
+5. Your goal is to capture anything that might be valuable for the "assistant" to remember about the User, to personalize and enrich future interactions.
+6. If the User explicitly requests to “remember” or note down something in their latest message (-2), always include it.
+7. Avoid storing short-term or trivial details (e.g. user: “I’m reading this question right now”, user: "I just woke up!", user: "Oh yeah, I saw that on TV the other day").
+8. Return your result as a Python list of strings, **each string representing a separate Memory**. If no relevant info is found, **only** return an empty list (`[]`). No explanations, just the list.
+</key_instructions>
 
 <what_to_extract>
 - Personal preferences, opinions, and feelings about topics/things/people
@@ -69,8 +71,8 @@ You will be provided with the last several messages from a conversation (display
 </what_not_to_extract>
 
 ---
-### Examples
 
+<examples>
 **Example 1 - Only storing Memories from the latest user message**
 -4. user: ```I love oranges 😍```
 -3. assistant: ```That's great! 🍊 I love oranges too!```
@@ -81,6 +83,7 @@ You will be provided with the last several messages from a conversation (display
 - The last user message states a new personal fact: “User hates oranges.”  
 - This replaces the older statement about loving oranges.
 - We only extract Memories from the latest user message (-2).
+
 Output:
 ```
 ["User hates oranges"]
@@ -94,12 +97,13 @@ Output:
 - The user provides two new pieces of information: their profession and the date of their presentation.
 - These are both distinct facts that should be remembered separately.
 - We extract both the explicit request to remember the presentation date and the implicit fact about their occupation.
+
 Output:
 ```
 ["User works as a junior data analyst", "User has a big presentation on March 15"]
 ```
 
-**Example 3 - Complex Memories linking via Context**
+**Example 3 - Memory linking via context**
 -5. assistant: ```Nutella is amazing! 😍```
 -4. user: ```Soo, remember how a week ago I had bought a new TV?```
 -3. assistant: ```Yes, I remember that. What about it?```
@@ -112,6 +116,7 @@ Output:
 - The remaining message (-5) is irrelevant.
 - When extracting the memory, we include the context of the TV purchase to make the memory meaningful. This will help semantically link it to the prior fact about buying the TV.
 - We assume there might be a prior memory about the TV purchase, so we phrase this new memory to connect to that earlier fact.
+
 Output:
 ```
 ["User's TV they bought a week ago broke down today"]
@@ -125,10 +130,30 @@ Output:
 **Analysis**
 - The User message (-2) is clearly sarcastic and not meant to be taken literally. It does not contain any relevant information to store.
 - The other messages (-3, -1) are not relevant as they're not about the User.
+
 Output:
 ```
 []
-```\
+```
+
+**Example 5 - Multiple complex linked Memories**
+-2. user: ```I am following a 30-day program to improve my fitness and health. If I send you the details, could you be my personal trainer for day 12?```
+-1. assistant: ```Absolutely! Please send me the details of your program, and I'll be happy to assist you as your personal trainer for day 12.```
+
+**Analysis**
+- The User message (-2) contains two distinct pieces of information:
+  1. The User is following a 30-day fitness program.
+  2. The User is on day 12 of that program.
+- We have to store both facts as separate Memories, and we have to link them logically so they can be understood both individually and in relation to each other.
+- To link them logically, we phrase the second memory to reference the first, indicating that day 12 is part of the 30-day program.
+- We can't phrase them like "User is on a 30-day program to improve fitness and health" and "User is on day 12 of that program", because *that program* will have no meaning without context.
+- We don't need to add dates, as all Memories are automatically timestamped upon creation and update.
+
+Output:
+```
+["User is following a 30-day program to improve fitness and health", "User is on day 12 of their 30-day fitness program"
+```
+</examples>\
 """
 
 CONSOLIDATE_MEMORIES_PROMPT = """You are maintaining a set of “Memories” for a user, similar to journal entries. Each memory has:
