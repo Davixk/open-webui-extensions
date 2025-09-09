@@ -13,7 +13,7 @@ funding_url: https://ko-fi.com/nokodo
 import ast
 import json
 import time
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Literal, Optional, cast
 
 import aiohttp
 from aiohttp import ClientError
@@ -28,6 +28,8 @@ from open_webui.routers.memories import (
     query_memory,
 )
 from pydantic import BaseModel, Field
+
+LogLevel = Literal["debug", "info", "warning", "error"]
 
 STRINGIFIED_MESSAGE_TEMPLATE = "-{index}. {role}: ```{content}```"
 
@@ -258,6 +260,9 @@ Make sure your final answer is just the array, with no added commentary.
 """
 
 
+LOG_FORMAT = "[Auto Memory][{level}] {message}"
+
+
 class Filter:
     class Valves(BaseModel):
         openai_api_url: str = Field(
@@ -312,12 +317,19 @@ class Filter:
             description="override for number of recent messages to consider (falls back to global if null). includes assistant responses.",
         )
 
-    def debug_log(self, message: str):
-        if self.valves.debug_mode:
-            print(f"[Auto Memory][debug] {message}")
+    def log(self, message: str, level: LogLevel = "info"):
+        """Unified logger.
 
-    def log(self, message: str):
-        print(f"[Auto Memory][info] {message}")
+        Args:
+            message: Text to log
+            level: LogLevel
+        """
+        if level == "debug" and not self.valves.debug_mode:
+            return
+        # Simple normalization
+        if level not in {"debug", "info", "warning", "error"}:
+            level = "info"
+        print(LOG_FORMAT.format(level=level, message=message))
 
     def __init__(self):
         self.valves = self.Valves()
@@ -328,9 +340,10 @@ class Filter:
         __event_emitter__: Callable[[Any], Awaitable[None]],
         __user__: Optional[dict] = None,
     ) -> dict:
-        self.debug_log(f"inlet: {__name__}")
-        self.debug_log(
-            f"inlet: user ID: {__user__.get('id') if __user__ else 'no user'}"
+        self.log(f"inlet: {__name__}", level="debug")
+        self.log(
+            f"inlet: user ID: {__user__.get('id') if __user__ else 'no user'}",
+            level="debug",
         )
         return body
 
@@ -340,26 +353,31 @@ class Filter:
         __event_emitter__: Callable[[Any], Awaitable[None]],
         __user__: Optional[dict] = None,
     ) -> dict:
+        # --- Initialization & validation ---
         self.log("outlet invoked")
-
         if __user__ is None:
             raise ValueError("user information is required")
-
         user = Users.get_user_by_id(__user__["id"])
         if user is None:
             raise ValueError("user not found")
 
-        self.debug_log(f"input user type = {type(__user__)}")
-        self.debug_log(
-            f"user.id = {user.id} user.name = {user.name} user.email = {user.email}"
+        self.log(f"input user type = {type(__user__)}", level="debug")
+        self.log(
+            f"user.id = {user.id} user.name = {user.name} user.email = {user.email}",
+            level="debug",
         )
 
         self.user_valves = __user__.get("valves", self.UserValves())
-        self.debug_log(f"user valves = {self.user_valves}")
+        if not isinstance(self.user_valves, self.UserValves):
+            raise ValueError("invalid user valves")
+        self.user_valves = cast(Filter.UserValves, self.user_valves)
+        self.log(f"user valves = {self.user_valves}", level="debug")
 
+        # --- Message handling ---
         messages = body.get("messages", [])
-        self.debug_log(
-            f"debug user={'yes' if user else 'no'} messages={len(messages)} api_url={self.user_valves.openai_api_url or self.valves.openai_api_url} model={self.user_valves.model or self.valves.model}"
+        self.log(
+            f"debug user={'yes' if user else 'no'} messages={len(messages)} api_url={self.user_valves.openai_api_url or self.valves.openai_api_url} model={self.user_valves.model or self.valves.model}",
+            level="debug",
         )
 
         if len(messages) == 0:
@@ -376,7 +394,10 @@ class Filter:
                 if self.user_valves.messages_to_consider is not None
                 else self.valves.messages_to_consider
             )
-            self.debug_log(f"using last {effective_messages_to_consider} messages")
+            self.log(
+                f"using last {effective_messages_to_consider} messages",
+                level="debug",
+            )
             for i in range(1, effective_messages_to_consider + 1):
                 if i > len(messages):
                     break
@@ -390,15 +411,15 @@ class Filter:
                         )
                     )
                 except Exception as e:
-                    print(f"error stringifying message {i}: {e}")
+                    self.log(f"error stringifying message {i}: {e}", level="warning")
             prompt_string = "\n".join(stringified_messages)
-            self.debug_log("calling identify_memories")
+            self.log("calling identify_memories", level="debug")
             try:
                 memories = await self.identify_memories(prompt_string)
             except Exception as e:
-                self.log(f"identify_memories error: {e}")
+                self.log(f"identify_memories error: {e}", level="error")
                 memories = "[]"
-            self.debug_log(f"raw identify response: {memories[:200]}")
+            self.log(f"raw identify response: {memories[:200]}", level="debug")
             if (
                 memories.startswith("[")
                 and memories.endswith("]")
@@ -415,11 +436,10 @@ class Filter:
                         {"type": "status", "data": {"description": desc, "done": True}}
                     )
             else:
-                self.log(
-                    f"no new memories identified (raw response: {memories[:120]}...)"
-                )
+                self.log("no new memories identified")
+                self.log(f"raw response: {memories[:120]}...", level="debug")
 
-        # Process assistant response if auto-save is enabled
+        # --- Optional assistant response memory ---
         if (
             user
             and self.valves.save_assistant_response
@@ -441,7 +461,7 @@ class Filter:
                         }
                     )
             except Exception as e:
-                self.log(f"error adding assistant memory {str(e)}")
+                self.log(f"error adding assistant memory {str(e)}", level="error")
                 if self.user_valves.show_status:
                     await __event_emitter__(
                         {
@@ -481,12 +501,12 @@ class Filter:
         }
         try:
             timeout = aiohttp.ClientTimeout(total=30)
-            self.debug_log(f"sending LLM request model={model} url={url}")
+            self.log(f"sending LLM request model={model} url={url}", level="debug")
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 response = await session.post(url, headers=headers, json=payload)
                 response.raise_for_status()
                 json_content = await response.json()
-            self.debug_log("received LLM response")
+            self.log("received LLM response", level="debug")
             return json_content["choices"][0]["message"]["content"]
         except ClientError as e:
             # Fixed error handling
@@ -507,7 +527,7 @@ class Filter:
         """
         try:
             memory_list = ast.literal_eval(memories)
-            self.log(f"identified {len(memory_list)} new memories")
+            self.log(f"identified {len(memory_list)} new memories", level="info")
             for memory in memory_list:
                 await self.store_memory(memory, user)
             return True
@@ -564,7 +584,7 @@ class Filter:
                 if item["distance"] < self.valves.related_memories_dist
             ]
             # Limit to relevant data to minimize tokens
-            self.debug_log(f"filtered data: {filtered_data}")
+            self.log(f"filtered data: {filtered_data}", level="debug")
             fact_list = [
                 {"fact": item["fact"], "created_at": item["metadata"]["created_at"]}
                 for item in filtered_data
@@ -591,7 +611,7 @@ class Filter:
                         user=user,
                     )
                 except Exception as inner:
-                    self.log(f"failed adding memory '{item}': {inner}")
+                    self.log(f"failed adding memory '{item}': {inner}", level="error")
         except Exception as e:
             return f"unable to add consolidated memories: {e}"
         try:
