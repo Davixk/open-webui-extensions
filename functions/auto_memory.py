@@ -5,7 +5,7 @@ description: Automatically identify and store valuable information from chats as
 author_email: nokodo@nokodo.net
 author_url: https://nokodo.net
 repository_url: https://nokodo.net/github/open-webui-extensions
-version: 0.5.2
+version: 0.5.3
 required_open_webui_version: >= 0.5.0
 funding_url: https://ko-fi.com/nokodo
 """
@@ -265,44 +265,59 @@ class Filter:
             description="openai compatible endpoint",
         )
         model: str = Field(
-            default="gpt-4o",
-            description="Model to use to determine memory. An intelligent model is highly recommended, as it will be able to better understand the context of the conversation.",
+            default="gpt-5-mini",
+            description="model to use to determine memory. an intelligent model is highly recommended, as it will be able to better understand the context of the conversation.",
         )
         api_key: str = Field(
             default="", description="API key for OpenAI compatible endpoint"
         )
+        messages_to_consider: int = Field(
+            default=4,
+            description="global default number of recent messages to consider for memory extraction (user override can supply a different value).",
+        )
         related_memories_n: int = Field(
             default=5,
-            description="Number of related memories to consider when updating memories",
+            description="number of related memories to consider when updating memories",
         )
         related_memories_dist: float = Field(
             default=0.75,
-            description="Distance of memories to consider for updates. Smaller number will be more closely related.",
+            description="distance of memories to consider for updates. Smaller number will be more closely related.",
         )
         save_assistant_response: bool = Field(
             default=False,
-            description="Automatically save assistant responses as memories",
+            description="automatically save assistant responses as memories",
+        )
+        debug_mode: bool = Field(
+            default=False,
+            description="enable debug logging",
         )
 
     class UserValves(BaseModel):
         show_status: bool = Field(
-            default=True, description="Show status of the action."
+            default=True, description="show status of the action."
         )
         openai_api_url: Optional[str] = Field(
             default=None,
-            description="User-specific openai compatible endpoint (overrides global)",
+            description="user-specific openai compatible endpoint (overrides global)",
         )
         model: Optional[str] = Field(
             default=None,
-            description="User-specific model to use (overrides global). An intelligent model is highly recommended, as it will be able to better understand the context of the conversation.",
+            description="user-specific model to use (overrides global). an intelligent model is highly recommended, as it will be able to better understand the context of the conversation.",
         )
         api_key: Optional[str] = Field(
-            default=None, description="User-specific API key (overrides global)"
+            default=None, description="user-specific API key (overrides global)"
         )
-        messages_to_consider: int = Field(
-            default=4,
-            description="Number of messages to consider for memory processing, starting from the last message. Includes assistant responses.",
+        messages_to_consider: Optional[int] = Field(
+            default=None,
+            description="override for number of recent messages to consider (falls back to global if null). includes assistant responses.",
         )
+
+    def debug_log(self, message: str):
+        if self.valves.debug_mode:
+            print(f"[Auto Memory][debug] {message}")
+
+    def log(self, message: str):
+        print(f"[Auto Memory][info] {message}")
 
     def __init__(self):
         self.valves = self.Valves()
@@ -313,8 +328,10 @@ class Filter:
         __event_emitter__: Callable[[Any], Awaitable[None]],
         __user__: Optional[dict] = None,
     ) -> dict:
-        print(f"inlet:{__name__}")
-        print(f"inlet:user:{__user__}")
+        self.debug_log(f"inlet: {__name__}")
+        self.debug_log(
+            f"inlet: user ID: {__user__.get('id') if __user__ else 'no user'}"
+        )
         return body
 
     async def outlet(
@@ -323,34 +340,44 @@ class Filter:
         __event_emitter__: Callable[[Any], Awaitable[None]],
         __user__: Optional[dict] = None,
     ) -> dict:
-        print("Auto Memory: outlet invoked")
-        user: Optional[UserModel] = None
-        if __user__ and "id" in __user__:
-            try:
-                user = Users.get_user_by_id(__user__["id"])
-            except Exception as e:
-                print(f"Auto Memory: unable to fetch user: {e}")
-        # Load per-user valves if provided; fallback to defaults
-        self.user_valves = (
-            __user__.get("valves", self.UserValves()) if __user__ else self.UserValves()
+        self.log("outlet invoked")
+
+        if __user__ is None:
+            raise ValueError("user information is required")
+
+        user = Users.get_user_by_id(__user__["id"])
+        if user is None:
+            raise ValueError("user not found")
+
+        self.debug_log(f"input user type = {type(__user__)}")
+        self.debug_log(
+            f"user.id = {user.id} user.name = {user.name} user.email = {user.email}"
         )
 
+        self.user_valves = __user__.get("valves", self.UserValves())
+        self.debug_log(f"user valves = {self.user_valves}")
+
         messages = body.get("messages", [])
-        print(
-            f"Auto Memory: debug user={'yes' if user else 'no'} messages={len(messages)} api_url={self.user_valves.openai_api_url or self.valves.openai_api_url} model={self.user_valves.model or self.valves.model}"
+        self.debug_log(
+            f"debug user={'yes' if user else 'no'} messages={len(messages)} api_url={self.user_valves.openai_api_url or self.valves.openai_api_url} model={self.user_valves.model or self.valves.model}"
         )
-        if not user:
-            print("Auto Memory: skipping (no user context)")
-        elif len(messages) == 0:
-            print("Auto Memory: skipping (no messages)")
+
+        if len(messages) == 0:
+            self.log("skipping (no messages)")
         elif len(messages) < 2:
-            print("Auto Memory: skipping (need >=2 messages for context)")
+            self.log("skipping (need >=2 messages for context)")
         elif not (self.user_valves.api_key or self.valves.api_key):
-            print("Auto Memory: skipping (no API key configured)")
+            self.log("skipping (no API key configured)")
         else:
             # Require at least 2 messages (one user + one prior context) to attempt extraction
             stringified_messages: list[str] = []
-            for i in range(1, self.user_valves.messages_to_consider + 1):
+            effective_messages_to_consider = (
+                self.user_valves.messages_to_consider
+                if self.user_valves.messages_to_consider is not None
+                else self.valves.messages_to_consider
+            )
+            self.debug_log(f"using last {effective_messages_to_consider} messages")
+            for i in range(1, effective_messages_to_consider + 1):
                 if i > len(messages):
                     break
                 try:
@@ -363,15 +390,15 @@ class Filter:
                         )
                     )
                 except Exception as e:
-                    print(f"Error stringifying message {i}: {e}")
+                    print(f"error stringifying message {i}: {e}")
             prompt_string = "\n".join(stringified_messages)
-            print("Auto Memory: calling identify_memories")
+            self.debug_log("calling identify_memories")
             try:
                 memories = await self.identify_memories(prompt_string)
             except Exception as e:
-                print(f"Auto Memory: identify_memories error: {e}")
+                self.log(f"identify_memories error: {e}")
                 memories = "[]"
-            print(f"Auto Memory: raw identify response: {memories[:200]}")
+            self.debug_log(f"raw identify response: {memories[:200]}")
             if (
                 memories.startswith("[")
                 and memories.endswith("]")
@@ -380,16 +407,16 @@ class Filter:
                 result = await self.process_memories(memories, user)
                 if self.user_valves.show_status:
                     desc = (
-                        f"Added memory: {memories}"
+                        f"added memory: {memories}"
                         if result
-                        else f"Memory failed: {result}"
+                        else f"memory failed: {result}"
                     )
                     await __event_emitter__(
                         {"type": "status", "data": {"description": desc, "done": True}}
                     )
             else:
-                print(
-                    f"Auto Memory: no new memories identified (raw response: {memories[:120]}...)"
+                self.log(
+                    f"no new memories identified (raw response: {memories[:120]}...)"
                 )
 
         # Process assistant response if auto-save is enabled
@@ -405,22 +432,22 @@ class Filter:
                     form_data=AddMemoryForm(content=last_assistant_message["content"]),
                     user=user,
                 )
-                print(f"Assistant Memory Added: {memory_obj}")
+                self.log(f"assistant memory added: {memory_obj}")
                 if self.user_valves.show_status:
                     await __event_emitter__(
                         {
                             "type": "status",
-                            "data": {"description": "Memory saved", "done": True},
+                            "data": {"description": "memory saved", "done": True},
                         }
                     )
             except Exception as e:
-                print(f"Error adding assistant memory {str(e)}")
+                self.log(f"error adding assistant memory {str(e)}")
                 if self.user_valves.show_status:
                     await __event_emitter__(
                         {
                             "type": "status",
                             "data": {
-                                "description": "Error saving memory",
+                                "description": "error saving memory",
                                 "done": True,
                             },
                         }
@@ -436,8 +463,6 @@ class Filter:
         return memories
 
     async def query_openai_api(self, system_prompt: str, prompt: str) -> str:
-
-        # Use user-specific values if provided, otherwise use global values
         api_url = self.user_valves.openai_api_url or self.valves.openai_api_url
         model = self.user_valves.model or self.valves.model
         api_key = self.user_valves.api_key or self.valves.api_key
@@ -456,36 +481,38 @@ class Filter:
         }
         try:
             timeout = aiohttp.ClientTimeout(total=30)
-            print(f"Auto Memory: sending LLM request model={model} url={url}")
+            self.debug_log(f"sending LLM request model={model} url={url}")
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 response = await session.post(url, headers=headers, json=payload)
                 response.raise_for_status()
                 json_content = await response.json()
-            print("Auto Memory: received LLM response")
+            self.debug_log("received LLM response")
             return json_content["choices"][0]["message"]["content"]
         except ClientError as e:
             # Fixed error handling
             error_msg = str(
                 e
             )  # Convert the error to string instead of trying to access .response
-            raise Exception(f"Http error: {error_msg}")
+            raise Exception(f"http error: {error_msg}")
         except Exception as e:
-            raise Exception(f"Unexpected error: {str(e)}")
+            raise Exception(f"unexpected error: {str(e)}")
 
     async def process_memories(
         self,
         memories: str,
         user: UserModel,
     ) -> bool:
-        """Given a list of memories as a string, go through each memory, check for duplicates, then store the remaining memories."""
+        """
+        given a list of memories as a string, go through each memory, check for duplicates, then store the remaining memories
+        """
         try:
             memory_list = ast.literal_eval(memories)
-            print(f"Auto Memory: identified {len(memory_list)} new memories")
+            self.log(f"identified {len(memory_list)} new memories")
             for memory in memory_list:
                 await self.store_memory(memory, user)
             return True
         except Exception as e:
-            print(f"Auto Memory: error processing memories: {e}")
+            self.log(f"error processing memories: {e}")
             return False
 
     async def store_memory(
@@ -493,7 +520,9 @@ class Filter:
         memory: str,
         user: UserModel,
     ) -> str:
-        """Given a memory, retrieve related memories. Update conflicting memories and consolidate memories as needed. Then store remaining memories."""
+        """
+        given a memory, retrieve related memories. update conflicting memories and consolidate memories as needed. then store remaining memories
+        """
         try:
             related_memories = await query_memory(
                 request=Request(scope={"type": "http", "app": webui_app}),
@@ -510,7 +539,7 @@ class Filter:
                     ["distances", [[100]]],
                 ]
         except Exception as e:
-            return f"Unable to query related memories: {e}"
+            return f"unable to query related memories: {e}"
         try:
             # Make a more useable format
             related_list = [obj for obj in related_memories]
@@ -535,14 +564,14 @@ class Filter:
                 if item["distance"] < self.valves.related_memories_dist
             ]
             # Limit to relevant data to minimize tokens
-            print(f"Filtered data: {filtered_data}")
+            self.debug_log(f"filtered data: {filtered_data}")
             fact_list = [
                 {"fact": item["fact"], "created_at": item["metadata"]["created_at"]}
                 for item in filtered_data
             ]
             fact_list.append({"fact": memory, "created_at": time.time()})
         except Exception as e:
-            return f"Unable to restructure and filter related memories: {e}"
+            return f"unable to restructure and filter related memories: {e}"
         # Consolidate conflicts or overlaps
         try:
             consolidated_memories = await self.query_openai_api(
@@ -562,14 +591,14 @@ class Filter:
                         user=user,
                     )
                 except Exception as inner:
-                    print(f"Auto Memory: failed adding memory '{item}': {inner}")
+                    self.log(f"failed adding memory '{item}': {inner}")
         except Exception as e:
-            return f"Unable to add consolidated memories: {e}"
+            return f"unable to add consolidated memories: {e}"
         try:
             # Delete the old memories
             if len(filtered_data) > 0:
                 for id in [item["id"] for item in filtered_data]:
                     await delete_memory_by_id(id, user)
         except Exception as e:
-            return f"Unable to delete related memories: {e}"
+            return f"unable to delete related memories: {e}"
         return "ok"
