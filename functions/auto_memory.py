@@ -5,35 +5,50 @@ description: Automatically identify and store valuable information from chats as
 author_email: nokodo@nokodo.net
 author_url: https://nokodo.net
 repository_url: https://nokodo.net/github/open-webui-extensions
-version: 0.5.3
+version: 1.0.0-alpha4
 required_open_webui_version: >= 0.5.0
 funding_url: https://ko-fi.com/nokodo
 """
 
-import ast
+import asyncio
 import json
-import time
-from typing import Any, Awaitable, Callable, Literal, Optional, cast
+import logging
+from datetime import datetime
+from typing import (
+    Any,
+    Awaitable,
+    Callable,
+    Literal,
+    Optional,
+    Type,
+    TypeVar,
+    Union,
+    cast,
+    overload,
+)
+from urllib.parse import urlparse
 
-import aiohttp
-from aiohttp import ClientError
 from fastapi.requests import Request
 from open_webui.main import app as webui_app
 from open_webui.models.users import UserModel, Users
+from open_webui.retrieval.vector.main import SearchResult
 from open_webui.routers.memories import (
     AddMemoryForm,
+    MemoryUpdateModel,
     QueryMemoryForm,
     add_memory,
     delete_memory_by_id,
     query_memory,
+    update_memory_by_id,
 )
-from pydantic import BaseModel, Field
+from openai import OpenAI
+from pydantic import BaseModel, Field, ValidationError, create_model
 
 LogLevel = Literal["debug", "info", "warning", "error"]
 
 STRINGIFIED_MESSAGE_TEMPLATE = "-{index}. {role}: ```{content}```"
 
-IDENTIFY_MEMORIES_PROMPT = """\
+LEGACY_IDENTIFY_MEMORIES_PROMPT = """\
 You are helping maintain a collection of Memories— individual “journal entries”, each automatically timestamped upon creation or update.
 You will be provided with the last several messages from a conversation (displayed with negative indices; -1 is the most recent overall message). Your job is to decide which details within the last User message (-2) are worth saving long-term as Memory entries.
 
@@ -158,7 +173,7 @@ Output:
 </examples>\
 """
 
-CONSOLIDATE_MEMORIES_PROMPT = """You are maintaining a set of “Memories” for a user, similar to journal entries. Each memory has:
+LEGACY_CONSOLIDATE_MEMORIES_PROMPT = """You are maintaining a set of “Memories” for a user, similar to journal entries. Each memory has:
 - A "fact" (a string describing something about the user or a user-related event).
 - A "created_at" timestamp (an integer or float representing when it was stored/updated).
 
@@ -259,14 +274,356 @@ Make sure your final answer is just the array, with no added commentary.
 - Do not add any explanation or disclaimers—just the final list.\
 """
 
+UNIFIED_SYSTEM_PROMPT = """\
+You are maintaining a collection of Memories - individual "journal entries" about a user, each automatically timestamped upon creation or update.
+
+You will be provided with:
+1. Recent messages from a conversation (displayed with negative indices; -1 is the most recent overall message)
+2. Any existing related memories that might potentially be relevant
+
+Your job is to determine what actions to take on the memory collection based on the User's **latest** message (-2).
+
+<key_instructions>
+## Instructions
+1. Focus ONLY on the User's most recent message (-2). Older messages provide context but should not generate new memories unless explicitly referenced in the latest message.
+2. Each Memory should represent a single fact or statement. Never combine multiple facts into one Memory.
+3. When the User's latest message contradicts existing memories, update the existing memory rather than creating a conflicting new one.
+4. If memories are exact duplicates or direct conflicts about the same topic, consolidate them by updating or deleting as appropriate.
+5. Link related Memories by including brief references when relevant to maintain semantic connections.
+6. Capture anything valuable for personalizing future interactions with the User.
+7. Honor explicit user requests to "remember", "forget", or "update" information.
+</key_instructions>
+
+<what_to_extract>
+## What you WANT to extract
+- Personal preferences, opinions, and feelings
+- Long-term information (likely true for months/years)
+- Future-oriented statements ("from now on", "going forward")
+- Direct memory requests ("remember that", "note this", "forget that")
+- Hobbies, interests, skills, activities
+- Important life details (job, education, relationships, location)
+- Goals, plans, aspirations
+- Recurring patterns or habits
+- Strong likes/dislikes affecting future conversations
+</what_to_extract>
+
+<what_not_to_extract>
+## What you do NOT want to extract
+- User/assistant names (already in profile)
+- Ephemeral states ("I'm reading this now", "I just woke up")
+- Information the assistant confirms is already known
+- Content from translation/rewrite requests
+- Trivial observations or fleeting thoughts
+- Temporary activities
+</what_not_to_extract>
+
+<actions_to_take>
+Based on your analysis, return a list of actions:
+
+**ADD**: Create new memory when:
+- New information not covered by existing memories
+- Distinct facts even if related to existing topics
+- User explicitly requests to remember something
+
+**UPDATE**: Modify existing memory when:
+- User provides updated/corrected information about the same fact
+- User explicitly asks to update something
+- New information refines but doesn't fundamentally change existing memory
+
+**DELETE**: Remove existing memory when:
+- User explicitly requests to forget something
+- User's statement directly contradicts an existing memory
+- Memory is completely obsolete due to new information
+- Duplicate memories exist (keep most recent)
+
+When updating or deleting, ONLY use the memory ID from the related memories list.
+</actions_to_take>
+
+<consolidation_rules>
+- Only combine memories if they are exact duplicates or direct conflicts about the same topic
+- For duplicates: keep only the most recent
+- For conflicts: update to reflect the latest information
+- For similar but distinct facts: keep them separate (e.g., "likes oranges" vs "likes ripe oranges")
+- Past events remain as separate journal entries unless explicitly contradicted
+</consolidation_rules>
+
+<examples>
+**Example 1 - Store new memories when no related found**
+Conversation:
+-2. user: ```I work as a senior data scientist at Tesla and my favorite programming language is Rust```
+-1. assistant: ```That's impressive! Working at Tesla must be exciting, and Rust is a great choice for systems programming```
+
+Related Memories:
+[
+  {"mem_id": "1", "created_at": "2024-01-05T10:00:00", "update_at": "2024-01-05T10:00:00", "content": "User enjoys electric vehicles"},
+  {"mem_id": "2", "created_at": "2024-02-10T14:00:00", "update_at": "2024-02-10T14:00:00", "content": "User has experience with Python and data analysis"},
+  {"mem_id": "3", "created_at": "2024-01-20T09:30:00", "update_at": "2024-01-20T09:30:00", "content": "User likes reading science fiction novels"}
+]
+
+**Analysis**
+- Existing memories might be tangentially related (electric vehicles/Tesla, data analysis) but don't actually cover the specific facts mentioned
+- User provides two distinct new facts: job/company and programming preference
+- Each should be stored as a separate new memory
+
+Output:
+{
+  "actions": [
+    {"action": "add", "content": "User works as a senior data scientist at Tesla"},
+    {"action": "add", "content": "User's favorite programming language is Rust"}
+  ]
+}
+
+**Example 2 - Consolidate similar memories while retaining context**
+Conversation:
+-2. user: ```Actually I prefer TypeScript over JavaScript for frontend work these days```
+-1. assistant: ```TypeScript's type safety definitely makes frontend development more maintainable!```
+
+Related Memories:
+[
+  {"mem_id": "123", "created_at": "2024-01-15T10:00:00", "update_at": "2024-01-15T10:00:00", "content": "User likes JavaScript for web development"},
+  {"mem_id": "456", "created_at": "2024-02-20T14:30:00", "update_at": "2024-02-20T14:30:00", "content": "User prefers JavaScript for frontend projects"},
+  {"mem_id": "789", "created_at": "2024-03-01T09:00:00", "update_at": "2024-03-01T09:00:00", "content": "User is learning React"}
+]
+
+**Analysis**
+- Two existing similar memories about JavaScript preference
+- User said they now prefer TypeScript, but it doesn't mean they don't *like* JavaScript anymore
+- Update one memory to reflect the new preference, leave all other memories untouched
+
+Output:
+{
+  "actions": [
+    {"action": "update", "id": "456", "new_content": "User prefers TypeScript for frontend work"}
+  ]
+}
+
+**Example 3 - Delete conflicting memory while retaining others**
+Conversation:
+-2. user: ```I'm joking! I didn't actually buy the iPhone!```
+-1. assistant: ```Ahh, you got me there! No worries.```
+
+Related Memories:
+[
+  {"mem_id": "789", "created_at": "2024-03-01T09:00:00", "update_at": "2024-03-01T09:00:00", "content": "User just bought a new iPhone"},
+  {"mem_id": "012", "created_at": "2024-03-02T11:00:00", "update_at": "2024-03-02T11:00:00", "content": "User likes Apple products"},
+  {"mem_id": "345", "created_at": "2024-03-02T11:00:00", "update_at": "2024-03-02T11:00:00", "content": "User is considering buying a new iPad"}
+]
+
+**Analysis**
+- User negates a previous statement about buying an iPhone
+- We should delete the memory about the iPhone purchase
+- The other memories about liking Apple products and considering an iPad remain valid
+
+Output:
+{
+  "actions": [
+    {"action": "delete", "id": "789"}
+  ]
+}
+
+**Example 4 - Handling multiple updates while retaining context**
+Conversation:
+-4. user: ```I'm thinking of switching from my current role```
+-3. assistant: ```What's motivating you to consider a change?```
+-2. user: ```Well, I got promoted to team lead last month, but I'm also interviewing at Google next week. The commute would be better since I just moved to Mountain View```
+-1. assistant: ```Congratulations on the promotion! That's interesting timing with the Google interview```
+
+Related Memories:
+[
+  {"mem_id": "345", "created_at": "2024-02-15T10:00:00", "update_at": "2024-02-15T10:00:00", "content": "User lives in San Francisco"},
+  {"mem_id": "678", "created_at": "2024-01-10T08:00:00", "update_at": "2024-01-10T08:00:00", "content": "User works as a software engineer"}
+]
+
+**Analysis**
+- User reveals: promoted to team lead (updates role), moved to Mountain View (conflicts with SF), interviewing at Google (new info)
+- We don't want to forget any of the user's life details, unless there is a conflict. So we create a new memory, and update the legacy ones.
+- Add new memory about Google interview as it's distinct future event
+
+Output:
+{
+  "actions": [
+    {"action": "update", "id": "345", "new_content": "User used to live in San Francisco"},
+    {"action": "update", "id": "678", "new_content": "User works as a team lead software engineer"},
+    {"action": "add", "content": "User got promoted to team lead last month"},
+    {"action": "add", "content": "User has just moved to Mountain View"},
+    {"action": "add", "content": "User lives in Mountain View"},
+    {"action": "add", "content": "User has an interview at Google next week"}
+  ]
+}
+</examples>\
+"""
+
 
 LOG_FORMAT = "[Auto Memory][{level}] {message}"
+LOGGER_NAME = "open_webui.extensions.auto_memory"
+
+
+async def emit_status(
+    description: str,
+    emitter: Callable[[Any], Awaitable[None]],
+    status: Literal["in_progress", "complete", "error"] = "complete",
+    done: Optional[bool] = None,
+):
+    """Emit a status event with sensible defaults.
+
+    Defaults:
+    - status defaults to "complete"
+    - done defaults to True unless status == "in_progress" (then False)
+    """
+    if not emitter:
+        raise ValueError("emitter is required")
+    if done is None:
+        done = status != "in_progress"
+    await emitter(
+        {
+            "type": "status",
+            "data": {
+                "description": description,
+                "status": status,
+                "done": done,
+            },
+        }
+    )
+
+
+class MemoryExtract(BaseModel):
+    """Single extracted memory fact."""
+
+    content: str = Field(..., description="Memory fact string")
+
+
+class MemoryExtractResponse(BaseModel):
+    """Structured extraction response (list of new memory facts)."""
+
+    memories: list[MemoryExtract] = Field(
+        default_factory=list, description="List of extracted memory facts"
+    )
+
+
+class MemoryAddAction(BaseModel):
+    action: Literal["add"] = Field(..., description="Action type (add)")
+    content: str = Field(..., description="Content of the memory to add")
+
+
+class MemoryUpdateAction(BaseModel):
+    action: Literal["update"] = Field(..., description="Action type (update)")
+    id: str = Field(..., description="ID of the memory to update")
+    new_content: str = Field(..., description="New content for the memory")
+
+
+class MemoryDeleteAction(BaseModel):
+    action: Literal["delete"] = Field(..., description="Action type (delete)")
+    id: str = Field(..., description="ID of the memory to delete")
+
+
+class MemoryActionRequestStub(BaseModel):
+    """This is a stub model to correctly type parameters. Not used directly."""
+
+    actions: list[Union[MemoryAddAction, MemoryUpdateAction, MemoryDeleteAction]] = (
+        Field(
+            default_factory=list,
+            description="List of actions to perform on memories",
+            max_length=20,
+        )
+    )
+
+
+class Memory(BaseModel):
+    """Single memory entry with metadata."""
+
+    mem_id: str = Field(..., description="ID of the memory")
+    created_at: datetime = Field(..., description="Creation timestamp")
+    update_at: datetime = Field(..., description="Last update timestamp")
+    content: str = Field(..., description="Content of the memory")
+
+
+def build_actions_request_model(existing_ids: list[str]):
+    """Dynamically build versions of the Update/Delete action models whose `id` fields
+    are Literal[...] constrained to the provided existing_ids. Returns a tuple:
+
+        (DynamicMemoryUpdateAction, DynamicMemoryDeleteAction, DynamicMemoryUpdateRequest)
+
+    If existing_ids is empty, we still return permissive forms (falls back to str) so that
+    add-only flows still parse.
+    """
+    if not existing_ids:
+        # No IDs to constrain, so no relevant memories = can only create new memories
+        allowed_actions = MemoryAddAction
+    else:
+        id_literal_type = Literal[tuple(existing_ids)]
+
+        DynamicMemoryUpdateAction = create_model(
+            "MemoryUpdateAction",
+            id=(id_literal_type, ...),
+            __base__=MemoryUpdateAction,
+        )
+
+        DynamicMemoryDeleteAction = create_model(
+            "MemoryDeleteAction",
+            id=(id_literal_type, ...),
+            __base__=MemoryDeleteAction,
+        )
+
+        allowed_actions = Union[
+            MemoryAddAction, DynamicMemoryUpdateAction, DynamicMemoryDeleteAction
+        ]
+
+    return create_model(
+        "MemoriesActionRequest",
+        actions=(
+            list[allowed_actions],
+            Field(
+                default_factory=list,
+                description="List of actions to perform on memories",
+                max_length=20,
+            ),
+        ),
+        __base__=BaseModel,
+    )
+
+
+def searchresult_to_memories(result: SearchResult) -> list[Memory]:
+    memories = []
+
+    if not result.ids or not result.documents or not result.metadatas:
+        raise ValueError("SearchResult must contain ids, documents, and metadatas")
+
+    # iterate over each query batch
+    for ids_batch, docs_batch, metas_batch in zip(
+        result.ids, result.documents, result.metadatas
+    ):
+        for mem_id, content, meta in zip(ids_batch, docs_batch, metas_batch):
+            if not meta:
+                raise ValueError(f"Missing metadata for memory id={mem_id}")
+            if "created_at" not in meta:
+                raise ValueError(
+                    f"Missing 'created_at' in metadata for memory id={mem_id}"
+                )
+            if "updated_at" not in meta:
+                # If updated_at is missing, default to created_at
+                meta["updated_at"] = meta["created_at"]
+
+            created_at = datetime.fromtimestamp(meta["created_at"])
+            updated_at = datetime.fromtimestamp(meta["updated_at"])
+
+            mem = Memory(
+                mem_id=mem_id,
+                created_at=created_at,
+                update_at=updated_at,
+                content=content,
+            )
+            memories.append(mem)
+
+    return memories
+
+
+R = TypeVar("R", bound=BaseModel)
 
 
 class Filter:
     class Valves(BaseModel):
         openai_api_url: str = Field(
-            default="https://api.openai.com",
+            default="https://api.openai.com/v1",
             description="openai compatible endpoint",
         )
         model: str = Field(
@@ -287,10 +644,6 @@ class Filter:
         related_memories_dist: float = Field(
             default=0.75,
             description="distance of memories to consider for updates. Smaller number will be more closely related.",
-        )
-        save_assistant_response: bool = Field(
-            default=False,
-            description="automatically save assistant responses as memories",
         )
         debug_mode: bool = Field(
             default=False,
@@ -318,21 +671,282 @@ class Filter:
         )
 
     def log(self, message: str, level: LogLevel = "info"):
-        """Unified logger.
-
-        Args:
-            message: Text to log
-            level: LogLevel
-        """
         if level == "debug" and not self.valves.debug_mode:
             return
-        # Simple normalization
         if level not in {"debug", "info", "warning", "error"}:
             level = "info"
+
+        logger = logging.getLogger(LOGGER_NAME)
+        getattr(logger, level, logger.info)(message)
+
         print(LOG_FORMAT.format(level=level, message=message))
+
+    def messages_to_string(self, messages: list[dict[str, Any]]) -> str:
+        stringified_messages: list[str] = []
+        effective_messages_to_consider = (
+            self.user_valves.messages_to_consider
+            if self.user_valves.messages_to_consider is not None
+            else self.valves.messages_to_consider
+        )
+        self.log(
+            f"using last {effective_messages_to_consider} messages",
+            level="debug",
+        )
+
+        for i in range(1, effective_messages_to_consider + 1):
+            if i > len(messages):
+                break
+            try:
+                message = messages[-i]
+                stringified_messages.append(
+                    STRINGIFIED_MESSAGE_TEMPLATE.format(
+                        index=i,
+                        role=message.get("role", "user"),
+                        content=message.get("content", ""),
+                    )
+                )
+            except Exception as e:
+                self.log(f"error stringifying message {i}: {e}", level="warning")
+
+        return "\n".join(stringified_messages)
+
+    @overload
+    async def query_openai_sdk(
+        self,
+        system_prompt: str,
+        user_message: str,
+        response_model: Type[R],
+    ) -> R: ...
+
+    @overload
+    async def query_openai_sdk(
+        self,
+        system_prompt: str,
+        user_message: str,
+        response_model: None = None,
+    ) -> str: ...
+
+    async def query_openai_sdk(
+        self,
+        system_prompt: str,
+        user_message: str,
+        response_model: Optional[Type[R]] = None,
+    ) -> Union[str, R]:
+        """Generic wrapper around OpenAI chat completions.
+        - Uses SDK for api.openai.com only
+        - Structured outputs when official domain and response_model provided
+        - Returns: model instance or raw string
+        """
+
+        api_url = (
+            self.user_valves.openai_api_url or self.valves.openai_api_url
+        ).rstrip("/")
+        hostname = urlparse(api_url).hostname or ""
+        enable_structured_outputs = (
+            hostname == "api.openai.com" and response_model is not None
+        )
+
+        model_name = self.user_valves.model or self.valves.model
+        api_key = self.user_valves.api_key or self.valves.api_key
+        temperature = 0.3 if "gpt-5" not in model_name else 1
+
+        client = OpenAI(api_key=api_key, base_url=api_url)
+        messages: list[dict[str, str]] = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message},
+        ]
+
+        if enable_structured_outputs:
+            response_model = cast(Type[R], response_model)
+            self.log(
+                f"using structured outputs with {response_model.__name__}",
+                level="debug",
+            )
+
+            response = client.chat.completions.parse(
+                model=model_name,
+                messages=messages,  # type: ignore[arg-type]
+                temperature=temperature,
+                response_format=response_model,
+            )
+
+            message = response.choices[0].message
+            if message.parsed is None:
+                raise ValueError(
+                    f"unable to parse structured response. message={message}"
+                )
+
+            return cast(R, message.parsed)
+
+        else:
+            self.log("not using structured outputs", level="debug")
+
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=messages,  # type: ignore[arg-type]
+                temperature=temperature,
+            )
+            self.log(f"sdk response: {response}", level="debug")
+
+            text_response = response.choices[0].message.content
+            if text_response is None:
+                raise ValueError(f"no text response from LLM. message={text_response}")
+
+            if response_model:
+                try:
+                    return response_model.model_validate_json(text_response)
+                except ValidationError as e:
+                    self.log(f"response model validation error: {e}", level="warning")
+                    raise
+
+            return text_response
 
     def __init__(self):
         self.valves = self.Valves()
+
+    async def auto_memory(
+        self,
+        messages: list[dict[str, Any]],
+        user: UserModel,
+        emitter: Callable[[Any], Awaitable[None]],
+    ) -> None:
+        """Execute the auto-memory extraction and update flow."""
+
+        if len(messages) < 2:
+            self.log("need at least 2 messages for context", level="debug")
+            return
+        self.log(f"flow started. user ID: {user.id}", level="debug")
+
+        # Extract latest user message for finding related memories
+        latest_user_msg = None
+        for msg in reversed(messages):
+            if msg.get("role") == "user":
+                latest_user_msg = msg.get("content", "")
+                break
+
+        if not latest_user_msg:
+            self.log("no user message found", level="debug")
+            return
+
+        # Query related memories
+        try:
+            results = await query_memory(
+                request=Request(scope={"type": "http", "app": webui_app}),
+                form_data=QueryMemoryForm(
+                    content=latest_user_msg, k=self.valves.related_memories_n
+                ),
+                user=user,
+            )
+        except Exception as e:
+            self.log(f"failed to query memories: {e}", level="error")
+            raise RuntimeError("failed to query memories") from e
+
+        related_memories = searchresult_to_memories(results) if results else []
+        self.log(f"found {len(related_memories)} related memories", level="info")
+        self.log(f"related memories: {related_memories}", level="debug")
+        stringified_memories = json.dumps(
+            [memory.model_dump(mode="json") for memory in related_memories]
+        )
+        conversation_str = self.messages_to_string(messages)
+
+        try:
+            action_plan = await self.query_openai_sdk(
+                system_prompt=UNIFIED_SYSTEM_PROMPT,
+                user_message=f"Conversation:\n{conversation_str}\n\nRelated Memories:\n{stringified_memories}",
+                response_model=build_actions_request_model(
+                    [m.mem_id for m in related_memories]
+                ),
+            )
+            self.log(f"action plan: {action_plan}", level="debug")
+
+            # Apply the actions
+            await self.apply_memory_actions(
+                action_plan=action_plan, user=user, emitter=emitter
+            )
+
+        except Exception as e:
+            self.log(f"LLM query failed: {e}", level="error")
+            if self.user_valves.show_status:
+                await emit_status(
+                    "memory processing failed", emitter=emitter, status="error"
+                )
+            return None
+
+    async def apply_memory_actions(
+        self,
+        action_plan: MemoryActionRequestStub,
+        user: UserModel,
+        emitter: Callable[[Any], Awaitable[None]],
+    ) -> None:
+        """
+        Execute memory actions from the plan.
+        Order: delete -> update -> add (prevents conflicts)
+        """
+
+        self.log("started apply_memory_actions", level="debug")
+        actions = action_plan.actions
+
+        # Show processing status
+        if emitter and len(actions) > 0:
+            self.log(f"processing {len(actions)} memory actions", level="debug")
+            await emit_status(
+                f"processing {len(actions)} memory actions",
+                emitter=emitter,
+                status="in_progress",
+            )
+
+        delete_actions = [a for a in actions if a.action == "delete"]
+        update_actions = [a for a in actions if a.action == "update"]
+        add_actions = [a for a in actions if a.action == "add"]
+
+        for action in delete_actions:
+            try:
+                await delete_memory_by_id(memory_id=action.id, user=user)
+                self.log(f"deleted memory. id={action.id}")
+            except Exception as e:
+                raise RuntimeError(f"failed to delete memory {action.id}: {e}")
+
+        for action in update_actions:
+            try:
+                if action.new_content.strip():
+                    await update_memory_by_id(
+                        memory_id=action.id,
+                        request=Request(scope={"type": "http", "app": webui_app}),
+                        form_data=MemoryUpdateModel(content=action.new_content),
+                        user=user,
+                    )
+                    self.log(f"updated memory. id={action.id}")
+            except Exception as e:
+                raise RuntimeError(f"failed to update memory {action.id}: {e}")
+
+        for action in add_actions:
+            try:
+                if action.content.strip():
+                    await add_memory(
+                        request=Request(scope={"type": "http", "app": webui_app}),
+                        form_data=AddMemoryForm(content=action.content),
+                        user=user,
+                    )
+                    self.log(f"added memory. content={action.content}")
+            except Exception as e:
+                raise RuntimeError(f"failed to add memory: {e}")
+
+        deleted_message = (
+            f"deleted {len(delete_actions)} memories" if delete_actions else ""
+        )
+        updated_message = (
+            f"updated {len(update_actions)} memories" if update_actions else ""
+        )
+        added_message = f"added {len(add_actions)} memories" if add_actions else ""
+        status_parts = [
+            part for part in [deleted_message, updated_message, added_message] if part
+        ]
+        status_message = ", ".join(status_parts)
+
+        self.log(status_message or "no changes", level="info")
+
+        if status_message and self.user_valves.show_status:
+            await emit_status(status_message, emitter=emitter, status="complete")
 
     def inlet(
         self,
@@ -353,10 +967,11 @@ class Filter:
         __event_emitter__: Callable[[Any], Awaitable[None]],
         __user__: Optional[dict] = None,
     ) -> dict:
-        # --- Initialization & validation ---
+
         self.log("outlet invoked")
         if __user__ is None:
             raise ValueError("user information is required")
+
         user = Users.get_user_by_id(__user__["id"])
         if user is None:
             raise ValueError("user not found")
@@ -373,252 +988,10 @@ class Filter:
         self.user_valves = cast(Filter.UserValves, self.user_valves)
         self.log(f"user valves = {self.user_valves}", level="debug")
 
-        # --- Message handling ---
-        messages = body.get("messages", [])
-        self.log(
-            f"debug user={'yes' if user else 'no'} messages={len(messages)} api_url={self.user_valves.openai_api_url or self.valves.openai_api_url} model={self.user_valves.model or self.valves.model}",
-            level="debug",
+        asyncio.create_task(
+            self.auto_memory(
+                body.get("messages", []), user=user, emitter=__event_emitter__
+            )
         )
-
-        if len(messages) == 0:
-            self.log("skipping (no messages)")
-        elif len(messages) < 2:
-            self.log("skipping (need >=2 messages for context)")
-        elif not (self.user_valves.api_key or self.valves.api_key):
-            self.log("skipping (no API key configured)")
-        else:
-            # Require at least 2 messages (one user + one prior context) to attempt extraction
-            stringified_messages: list[str] = []
-            effective_messages_to_consider = (
-                self.user_valves.messages_to_consider
-                if self.user_valves.messages_to_consider is not None
-                else self.valves.messages_to_consider
-            )
-            self.log(
-                f"using last {effective_messages_to_consider} messages",
-                level="debug",
-            )
-            for i in range(1, effective_messages_to_consider + 1):
-                if i > len(messages):
-                    break
-                try:
-                    message = messages[-i]
-                    stringified_messages.append(
-                        STRINGIFIED_MESSAGE_TEMPLATE.format(
-                            index=i,
-                            role=message.get("role", "user"),
-                            content=message.get("content", ""),
-                        )
-                    )
-                except Exception as e:
-                    self.log(f"error stringifying message {i}: {e}", level="warning")
-            prompt_string = "\n".join(stringified_messages)
-            self.log("calling identify_memories", level="debug")
-            try:
-                memories = await self.identify_memories(prompt_string)
-            except Exception as e:
-                self.log(f"identify_memories error: {e}", level="error")
-                memories = "[]"
-            self.log(f"raw identify response: {memories[:200]}", level="debug")
-            if (
-                memories.startswith("[")
-                and memories.endswith("]")
-                and len(memories) != 2
-            ):
-                result = await self.process_memories(memories, user)
-                if self.user_valves.show_status:
-                    desc = (
-                        f"added memory: {memories}"
-                        if result
-                        else f"memory failed: {result}"
-                    )
-                    await __event_emitter__(
-                        {"type": "status", "data": {"description": desc, "done": True}}
-                    )
-            else:
-                self.log("no new memories identified")
-                self.log(f"raw response: {memories[:120]}...", level="debug")
-
-        # --- Optional assistant response memory ---
-        if (
-            user
-            and self.valves.save_assistant_response
-            and len(body.get("messages", [])) > 0
-        ):
-            last_assistant_message = body["messages"][-1]
-            try:
-                memory_obj = await add_memory(
-                    request=Request(scope={"type": "http", "app": webui_app}),
-                    form_data=AddMemoryForm(content=last_assistant_message["content"]),
-                    user=user,
-                )
-                self.log(f"assistant memory added: {memory_obj}")
-                if self.user_valves.show_status:
-                    await __event_emitter__(
-                        {
-                            "type": "status",
-                            "data": {"description": "memory saved", "done": True},
-                        }
-                    )
-            except Exception as e:
-                self.log(f"error adding assistant memory {str(e)}", level="error")
-                if self.user_valves.show_status:
-                    await __event_emitter__(
-                        {
-                            "type": "status",
-                            "data": {
-                                "description": "error saving memory",
-                                "done": True,
-                            },
-                        }
-                    )
 
         return body
-
-    async def identify_memories(self, input_text: str) -> str:
-        memories = await self.query_openai_api(
-            system_prompt=IDENTIFY_MEMORIES_PROMPT,
-            prompt=input_text,
-        )
-        return memories
-
-    async def query_openai_api(self, system_prompt: str, prompt: str) -> str:
-        api_url = self.user_valves.openai_api_url or self.valves.openai_api_url
-        model = self.user_valves.model or self.valves.model
-        api_key = self.user_valves.api_key or self.valves.api_key
-
-        url = f"{api_url}/v1/chat/completions"
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        }
-        payload = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt},
-            ],
-        }
-        try:
-            timeout = aiohttp.ClientTimeout(total=30)
-            self.log(f"sending LLM request model={model} url={url}", level="debug")
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                response = await session.post(url, headers=headers, json=payload)
-                response.raise_for_status()
-                json_content = await response.json()
-            self.log("received LLM response", level="debug")
-            return json_content["choices"][0]["message"]["content"]
-        except ClientError as e:
-            # Fixed error handling
-            error_msg = str(
-                e
-            )  # Convert the error to string instead of trying to access .response
-            raise Exception(f"http error: {error_msg}")
-        except Exception as e:
-            raise Exception(f"unexpected error: {str(e)}")
-
-    async def process_memories(
-        self,
-        memories: str,
-        user: UserModel,
-    ) -> bool:
-        """
-        given a list of memories as a string, go through each memory, check for duplicates, then store the remaining memories
-        """
-        try:
-            memory_list = ast.literal_eval(memories)
-            self.log(f"identified {len(memory_list)} new memories", level="info")
-            for memory in memory_list:
-                await self.store_memory(memory, user)
-            return True
-        except Exception as e:
-            self.log(f"error processing memories: {e}")
-            return False
-
-    async def store_memory(
-        self,
-        memory: str,
-        user: UserModel,
-    ) -> str:
-        """
-        given a memory, retrieve related memories. update conflicting memories and consolidate memories as needed. then store remaining memories
-        """
-        try:
-            related_memories = await query_memory(
-                request=Request(scope={"type": "http", "app": webui_app}),
-                form_data=QueryMemoryForm(
-                    content=memory, k=self.valves.related_memories_n
-                ),
-                user=user,
-            )
-            if related_memories is None:
-                related_memories = [
-                    ["ids", [["123"]]],
-                    ["documents", [["blank"]]],
-                    ["metadatas", [[{"created_at": 999}]]],
-                    ["distances", [[100]]],
-                ]
-        except Exception as e:
-            return f"unable to query related memories: {e}"
-        try:
-            # Make a more useable format
-            related_list = [obj for obj in related_memories]
-            ids = related_list[0][1][0]
-            documents = related_list[1][1][0]
-            metadatas = related_list[2][1][0]
-            distances = related_list[3][1][0]
-            # Combine each document and its associated data into a list of dictionaries
-            structured_data = [
-                {
-                    "id": ids[i],
-                    "fact": documents[i],
-                    "metadata": metadatas[i],
-                    "distance": distances[i],
-                }
-                for i in range(len(documents))
-            ]
-            # Filter for distance within threshhold
-            filtered_data = [
-                item
-                for item in structured_data
-                if item["distance"] < self.valves.related_memories_dist
-            ]
-            # Limit to relevant data to minimize tokens
-            self.log(f"filtered data: {filtered_data}", level="debug")
-            fact_list = [
-                {"fact": item["fact"], "created_at": item["metadata"]["created_at"]}
-                for item in filtered_data
-            ]
-            fact_list.append({"fact": memory, "created_at": time.time()})
-        except Exception as e:
-            return f"unable to restructure and filter related memories: {e}"
-        # Consolidate conflicts or overlaps
-        try:
-            consolidated_memories = await self.query_openai_api(
-                system_prompt=CONSOLIDATE_MEMORIES_PROMPT,
-                prompt=json.dumps(fact_list),
-            )
-        except Exception as e:
-            return f"Unable to consolidate related memories: {e}"
-        try:
-            # Add the new memories
-            memory_list = ast.literal_eval(consolidated_memories)
-            for item in memory_list:
-                try:
-                    await add_memory(
-                        request=Request(scope={"type": "http", "app": webui_app}),
-                        form_data=AddMemoryForm(content=item),
-                        user=user,
-                    )
-                except Exception as inner:
-                    self.log(f"failed adding memory '{item}': {inner}", level="error")
-        except Exception as e:
-            return f"unable to add consolidated memories: {e}"
-        try:
-            # Delete the old memories
-            if len(filtered_data) > 0:
-                for id in [item["id"] for item in filtered_data]:
-                    await delete_memory_by_id(id, user)
-        except Exception as e:
-            return f"unable to delete related memories: {e}"
-        return "ok"
