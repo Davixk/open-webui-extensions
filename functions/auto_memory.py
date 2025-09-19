@@ -5,7 +5,7 @@ description: Automatically identify and store valuable information from chats as
 author_email: nokodo@nokodo.net
 author_url: https://nokodo.net
 repository_url: https://nokodo.net/github/open-webui-extensions
-version: 1.0.0-alpha4
+version: 1.0.0-alpha6
 required_open_webui_version: >= 0.5.0
 funding_url: https://ko-fi.com/nokodo
 """
@@ -48,234 +48,9 @@ LogLevel = Literal["debug", "info", "warning", "error"]
 
 STRINGIFIED_MESSAGE_TEMPLATE = "-{index}. {role}: ```{content}```"
 
-LEGACY_IDENTIFY_MEMORIES_PROMPT = """\
-You are helping maintain a collection of Memories— individual “journal entries”, each automatically timestamped upon creation or update.
-You will be provided with the last several messages from a conversation (displayed with negative indices; -1 is the most recent overall message). Your job is to decide which details within the last User message (-2) are worth saving long-term as Memory entries.
-
-<key_instructions>
-1. Identify new or changed personal details from the User's **latest** message (-2) only. Older user messages may appear for context; do not re-store older facts unless explicitly repeated or modified in the last User message (-2).
-2. If the User’s newest message contradicts an older statement (e.g., message -4 says “I love oranges” vs. message -2 says “I hate oranges”), extract only the updated info (“User hates oranges”).
-3. Think of each Memory as a single “fact” or statement. Never combine multiple facts into one Memory. If the User mentions multiple distinct items, break them into separate entries.
-4. Link related Memories together by including brief, minimal references to other Memories when relevant, to help semantically connect them. For example, if the User mentions a new detail about a previously noted event or preference, include a short reference to that earlier Memory to maintain context.
-5. Your goal is to capture anything that might be valuable for the "assistant" to remember about the User, to personalize and enrich future interactions.
-6. If the User explicitly requests to “remember” or note down something in their latest message (-2), always include it.
-7. Avoid storing short-term or trivial details (e.g. user: “I’m reading this question right now”, user: "I just woke up!", user: "Oh yeah, I saw that on TV the other day").
-8. Return your result as a Python list of strings, **each string representing a separate Memory**. If no relevant info is found, **only** return an empty list (`[]`). No explanations, just the list.
-</key_instructions>
-
-<what_to_extract>
-- Personal preferences, opinions, and feelings about topics/things/people
-- Information that will likely remain true for months or years
-- Anything with future-oriented phrases: "from now on", "going forward", "in the future"
-- Direct memory requests: "remember that", "note this", "add to memory", "store this"
-- Hobbies, interests, skills, and long-term activities
-- Important life details (job, education, relationships, location, etc.)
-- Personal goals, plans, or aspirations
-- Recurring patterns or habits
-- Strong likes/dislikes that could affect future conversations
-- "Forget" requests (store as "Forget that User...")
-</what_to_extract>
-
-<what_not_to_extract>
-- User names, since these are already in profile info and this would only create confusion
-- Assistant names, since Memories are assistant-agnostic and can be used across different assistants
-- Short-lived facts that won't matter soon (e.g., "I'm reading this right now", "I just woke up")
-- Random details that lack clear future relevance
-- Redundant information already known about the User (e.g., when the assistant replies with "Yes, I remember that" to a User message, it means the info is already stored)
-- Information from text the User is asking to translate or rewrite
-- Trivial observations or fleeting thoughts
-- Current temporary states or activities
-</what_not_to_extract>
-
----
-
-<examples>
-**Example 1 - Only storing Memories from the latest user message**
--4. user: ```I love oranges 😍```
--3. assistant: ```That's great! 🍊 I love oranges too!```
--2. user: ```Actually, I hate oranges 😂```
--1. assistant: ```omg you LIAR 😡```
-
-**Analysis**  
-- The last user message states a new personal fact: “User hates oranges.”  
-- This replaces the older statement about loving oranges.
-- We only extract Memories from the latest user message (-2).
-
-Output:
-```
-["User hates oranges"]
-```
-
-**Example 2 - Explicit and Implicit Memories**
--2. user: ```I work as a junior data analyst. Please remember that my big presentation is on March 15.```
--1. assistant: ```Got it! I'll make a note of that.```
-
-**Analysis**
-- The user provides two new pieces of information: their profession and the date of their presentation.
-- These are both distinct facts that should be remembered separately.
-- We extract both the explicit request to remember the presentation date and the implicit fact about their occupation.
-
-Output:
-```
-["User works as a junior data analyst", "User has a big presentation on March 15"]
-```
-
-**Example 3 - Memory linking via context**
--5. assistant: ```Nutella is amazing! 😍```
--4. user: ```Soo, remember how a week ago I had bought a new TV?```
--3. assistant: ```Yes, I remember that. What about it?```
--2. user: ```well, today it broke down 😭```
--1. assistant: ```Oh no! That's terrible!```
-
-**Analysis**
-- The only relevant message is the last User message (-2), which provides new information about the TV breaking down.
-- The previous messages (-3, -4) provide context over what the user was talking about.
-- The remaining message (-5) is irrelevant.
-- When extracting the memory, we include the context of the TV purchase to make the memory meaningful. This will help semantically link it to the prior fact about buying the TV.
-- We assume there might be a prior memory about the TV purchase, so we phrase this new memory to connect to that earlier fact.
-
-Output:
-```
-["User's TV they bought a week ago broke down today"]
-```
-
-**Example 4 - Sarcasm use**
--3. assistant: ```As an AI assistant, I can perform extremely complex calculations in seconds.```
--2. user: ```Oh yeah? I can do that with my eyes closed!```
--1. assistant: ```😂 Sure you can, Joe!```
-
-**Analysis**
-- The User message (-2) is clearly sarcastic and not meant to be taken literally. It does not contain any relevant information to store.
-- The other messages (-3, -1) are not relevant as they're not about the User.
-
-Output:
-```
-[]
-```
-
-**Example 5 - Multiple complex linked Memories**
--2. user: ```I am following a 30-day program to improve my fitness and health. If I send you the details, could you be my personal trainer for day 12?```
--1. assistant: ```Absolutely! Please send me the details of your program, and I'll be happy to assist you as your personal trainer for day 12.```
-
-**Analysis**
-- The User message (-2) contains two distinct pieces of information:
-  1. The User is following a 30-day fitness program.
-  2. The User is on day 12 of that program.
-- We have to store both facts as separate Memories, and we have to link them logically so they can be understood both individually and in relation to each other.
-- To link them logically, we phrase the second memory to reference the first, indicating that day 12 is part of the 30-day program.
-- We can't phrase them like "User is on a 30-day program to improve fitness and health" and "User is on day 12 of that program", because *that program* will have no meaning without context.
-- We don't need to add dates, as all Memories are automatically timestamped upon creation and update.
-
-Output:
-```
-["User is following a 30-day program to improve fitness and health", "User is on day 12 of their 30-day fitness program"
-```
-</examples>\
-"""
-
-LEGACY_CONSOLIDATE_MEMORIES_PROMPT = """You are maintaining a set of “Memories” for a user, similar to journal entries. Each memory has:
-- A "fact" (a string describing something about the user or a user-related event).
-- A "created_at" timestamp (an integer or float representing when it was stored/updated).
-
-**What You’re Doing**
-1. You’re given a list of such Memories that the system believes might be related or overlapping.
-2. Your goal is to produce a cleaned-up list of final facts, making sure we:
-   - Only combine Memories if they are exact duplicates or direct conflicts about the same topic.
-   - In case of duplicates, keep only the one with the latest (most recent) `created_at`.
-   - In case of a direct conflict (e.g., the user’s favorite color stated two different ways), keep only the most recent one.
-   - If Memories are partially similar but not truly duplicates or direct conflicts, preserve them both. We do NOT want to lose details or unify “User likes oranges” and “User likes ripe oranges” into a single statement—those remain separate.
-3. Return the final list as a simple Python list of strings—**each string is one separate memory/fact**—with no extra commentary.
-
-**Remember**  
-- This is a journaling system meant to give the user a clear, time-based record of who they are and what they’ve done.  
-- We do not want to clump multiple distinct pieces of info into one memory.  
-- We do not throw out older facts unless they are direct duplicates or in conflict with a newer statement.  
-- If there is a conflict (e.g., “User’s favorite color is red” vs. “User’s favorite color is teal”), keep the more recent memory only.
-
----
-
-### **Extended Example**
-
-Below is an example list of 15 “Memories.” Notice the variety of scenarios:
-- Potential duplicates
-- Partial overlaps
-- Direct conflicts
-- Ephemeral/past events
-
-**Input** (a JSON-like array):
-
-```
-[
-  {"fact": "User visited Paris for a business trip", "created_at": 1631000000},
-  {"fact": "User visited Paris for a personal trip with their girlfriend", "created_at": 1631500000},
-  {"fact": "User visited Paris for a personal trip with their girlfriend", "created_at": 1631600000}, 
-  {"fact": "User works as a junior data analyst", "created_at": 1633000000},
-  {"fact": "User's meeting with the project team is scheduled for Friday at 10 AM", "created_at": 1634000000},
-  {"fact": "User's meeting with the project team is scheduled for Friday at 11 AM", "created_at": 1634050000}, 
-  {"fact": "User likes to eat oranges", "created_at": 1635000000},
-  {"fact": "User likes to eat ripe oranges", "created_at": 1635100000},
-  {"fact": "User used to like red color, but not anymore", "created_at": 1635200000},
-  {"fact": "User's favorite color is teal", "created_at": 1635500000},
-  {"fact": "User's favorite color is red", "created_at": 1636000000},
-  {"fact": "User traveled to Japan last year", "created_at": 1637000000},
-  {"fact": "User traveled to Japan this month", "created_at": 1637100000},
-  {"fact": "User also works part-time as a painter", "created_at": 1637200000},
-  {"fact": "User had a dentist appointment last Tuesday", "created_at": 1637300000}
-]
-```
-
-**Analysis**:
-1. **Paris trips**  
-   - "User visited Paris for a personal trip with their girlfriend" appears **twice** (`created_at`: 1631500000 and 1631600000). They are exact duplicates but have different timestamps, so we keep only the most recent. The business trip is different, so keep it too.
-
-2. **Meeting time**  
-   - There's a direct conflict about the meeting time (10 AM vs 11 AM). We keep the more recent statement.
-
-3. **Likes oranges / ripe oranges**  
-   - These are partially similar, but not exactly the same or in conflict, so we keep both.
-
-4. **Color**  
-   - We have “User used to like red,” “User’s favorite color is teal,” and “User’s favorite color is red.” 
-   - The statement “User used to like red color, but not anymore” is not actually a direct conflict with “favorite color is teal.” We keep them both. 
-   - The newest color memory is “User’s favorite color is red” (timestamp 1636000000) which conflicts with the older “User’s favorite color is teal” (timestamp 1635500000). We keep the more recent red statement.
-
-5. **Japan**  
-   - “User traveled to Japan last year” vs “User traveled to Japan this month.” They’re not contradictory; one is old, one is new. Keep them both.
-
-6. **Past events**  
-   - Dentist appointment is ephemeral, but we keep it since each memory is a separate time-based journal entry.
-
-**Correct Output** (the final consolidated list of facts as strings):
-
-```
-[
-  "User visited Paris for a business trip",
-  "User visited Paris for a personal trip with their girlfriend",  <-- keep only the most recent from duplicates
-  "User works as a junior data analyst",
-  "User's meeting with the project team is scheduled for Friday at 11 AM", 
-  "User likes to eat oranges",
-  "User likes to eat ripe oranges",
-  "User used to like red color, but not anymore",
-  "User's favorite color is red",  <-- overrides teal
-  "User traveled to Japan last year",
-  "User traveled to Japan this month",
-  "User also works part-time as a painter",
-  "User had a dentist appointment last Tuesday"
-]
-```
-
-Make sure your final answer is just the array, with no added commentary.
-
----
-
-### **Final Reminder**
-- You’re only seeing these Memories because our system guessed they might overlap. If they’re not exact duplicates or direct conflicts, keep them all.  
-- Always produce a **Python list of strings**—each string is a separate memory/fact.  
-- Do not add any explanation or disclaimers—just the final list.\
-"""
 
 UNIFIED_SYSTEM_PROMPT = """\
-You are maintaining a collection of Memories - individual "journal entries" about a user, each automatically timestamped upon creation or update.
+You are maintaining a collection of Memories - individual "journal entries" or facts about a user, each automatically timestamped upon creation or update.
 
 You will be provided with:
 1. Recent messages from a conversation (displayed with negative indices; -1 is the most recent overall message)
@@ -285,13 +60,16 @@ Your job is to determine what actions to take on the memory collection based on 
 
 <key_instructions>
 ## Instructions
-1. Focus ONLY on the User's most recent message (-2). Older messages provide context but should not generate new memories unless explicitly referenced in the latest message.
-2. Each Memory should represent a single fact or statement. Never combine multiple facts into one Memory.
-3. When the User's latest message contradicts existing memories, update the existing memory rather than creating a conflicting new one.
-4. If memories are exact duplicates or direct conflicts about the same topic, consolidate them by updating or deleting as appropriate.
-5. Link related Memories by including brief references when relevant to maintain semantic connections.
-6. Capture anything valuable for personalizing future interactions with the User.
-7. Honor explicit user requests to "remember", "forget", or "update" information.
+1. Focus ONLY on the **User's most recent message** (-2). Older messages provide context but should not generate new memories unless explicitly referenced in the latest message.
+2. Each Memory should represent **a single fact or statement**. Never combine multiple facts into one Memory.
+3. When the User's latest message contradicts existing memories, **update the existing memory** rather than creating a conflicting new one.
+4. If memories are exact duplicates or direct conflicts about the same topic, **consolidate them by updating or deleting** as appropriate.
+5. **Link related Memories** by including brief references when relevant to maintain semantic connections.
+6. Capture anything valuable for **personalizing future interactions** with the User.
+7. Honor **explicit user requests** to "remember", "forget", or "update" information.
+8. Each memory must be **self-contained and understandable without external context.** Avoid ambiguous references like "it", "that", or "there" - instead, include the specific subject being referenced. For example, prefer "User's new TV broke" over "It broke".
+9. Be alert to **sarcasm, jokes, and non-literal language.** If the User's statement appears to be hyperbole, sarcasm, or non-literal rather than a factual claim, do not store it as a memory.
+10. When determining which memory is "most recent" for conflict resolution, **refer to the `created_at` or `update_at` timestamps** from the existing memories.
 </key_instructions>
 
 <what_to_extract>
@@ -315,6 +93,8 @@ Your job is to determine what actions to take on the memory collection based on 
 - Content from translation/rewrite requests
 - Trivial observations or fleeting thoughts
 - Temporary activities
+- Sarcastic remarks or obvious jokes
+- Non-literal statements or hyperbole
 </what_not_to_extract>
 
 <actions_to_take>
@@ -334,14 +114,14 @@ Based on your analysis, return a list of actions:
 - User explicitly requests to forget something
 - User's statement directly contradicts an existing memory
 - Memory is completely obsolete due to new information
-- Duplicate memories exist (keep most recent)
+- Duplicate memories exist (keep oldest based on `created_at` timestamp)
 
 When updating or deleting, ONLY use the memory ID from the related memories list.
 </actions_to_take>
 
 <consolidation_rules>
 - Only combine memories if they are exact duplicates or direct conflicts about the same topic
-- For duplicates: keep only the most recent
+- For duplicates: keep only the oldest (based on `created_at` timestamp)
 - For conflicts: update to reflect the latest information
 - For similar but distinct facts: keep them separate (e.g., "likes oranges" vs "likes ripe oranges")
 - Past events remain as separate journal entries unless explicitly contradicted
@@ -444,10 +224,55 @@ Output:
   "actions": [
     {"action": "update", "id": "345", "new_content": "User used to live in San Francisco"},
     {"action": "update", "id": "678", "new_content": "User works as a team lead software engineer"},
-    {"action": "add", "content": "User got promoted to team lead last month"},
+    {"action": "add", "content": "User got promoted to team lead"},
     {"action": "add", "content": "User has just moved to Mountain View"},
     {"action": "add", "content": "User lives in Mountain View"},
-    {"action": "add", "content": "User has an interview at Google next week"}
+    {"action": "add", "content": "User has an interview at Google"}
+  ]
+}
+
+**Example 5 - Handling sarcasm and non-literal language**
+Conversation:
+-3. assistant: ```As an AI assistant, I can perform extremely complex calculations in seconds.```
+-2. user: ```Oh yeah? I can do that with my eyes closed! I'm basically a human calculator!```
+-1. assistant: ```😂 Sure you can!```
+
+Related Memories:
+[]
+
+**Analysis**
+- The User's message is clearly sarcastic/joking - they're not literally claiming to be a human calculator
+- This is hyperbole used for humorous effect, not a factual statement about their abilities
+- No memories should be created from obvious sarcasm or jokes
+
+Output:
+{
+  "actions": []
+}
+
+**Example 6 - Cross-message context linking**
+Conversation:
+-5. assistant: ```How's your new TV working out?```
+-4. user: ```Remember how I bought that Samsung OLED TV last week?```
+-3. assistant: ```Yes, I remember that. What about it?```
+-2. user: ```Well, it broke down today! The screen just went black.```
+-1. assistant: ```Oh no! That's terrible for such a new TV!```
+
+Related Memories:
+[
+  {"mem_id": "101", "created_at": "2024-03-15T10:00:00", "update_at": "2024-03-15T10:00:00", "content": "User bought a Samsung OLED TV"}
+]
+
+**Analysis**
+- The User's latest message provides new information about the TV breaking
+- We need to create a self-contained memory that includes context from earlier messages
+- The new memory should reference the Samsung OLED TV specifically, not just "it" or "the TV"
+- This helps semantically link to the existing memory about the purchase
+
+Output:
+{
+  "actions": [
+    {"action": "add", "content": "User's Samsung OLED TV, that was recently purchased, just broke down with a black screen"}
   ]
 }
 </examples>\
@@ -483,20 +308,6 @@ async def emit_status(
                 "done": done,
             },
         }
-    )
-
-
-class MemoryExtract(BaseModel):
-    """Single extracted memory fact."""
-
-    content: str = Field(..., description="Memory fact string")
-
-
-class MemoryExtractResponse(BaseModel):
-    """Structured extraction response (list of new memory facts)."""
-
-    memories: list[MemoryExtract] = Field(
-        default_factory=list, description="List of extracted memory facts"
     )
 
 
