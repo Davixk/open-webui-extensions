@@ -30,11 +30,13 @@ Automatically identifies and stores valuable information from chats as Memories 
 - **Messages to Consider**: Set how many recent messages to analyze for memory extraction
 
 ### Easy Installation (Recommended)
+
 1. Navigate to the [Open WebUI Extensions page](https://openwebui.com/f/nokodo/auto_memory)
 2. Click on the "Get" button to automatically install the extension
 3. Configure the extension through the Open WebUI settings interface
 
 ### Manual Installation
+
 1. Clone this repository:
    ```bash
    git clone https://github.com/davixk/open-webui-extensions.git
@@ -64,7 +66,7 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## License
 
-[Specify your license information here]
+See individual extension documentation for specific licensing terms.
 
 ## Support
 

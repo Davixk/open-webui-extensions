@@ -1,13 +1,12 @@
 # Auto Memory
 
-Automatically identify and store relevant information from chats as Memories in Open WebUI.  
-Based on the original function by [@devve](https://openwebui.com/u/devve).
+> Automatically identify and store relevant information from chats as Memories in Open WebUI.
 
 <br>
 
 ## ✨ What It Does
 
-**Auto Memory** listens in on your conversations and detects facts, preferences, key moments, or anything useful for the assistant to remember about you.  
+**Auto Memory** listens in on your conversations and detects facts, preferences, key moments, or anything useful for the assistant to remember about you.
 It stores these as separate memories, so future AI interactions stay personal and context-aware—_without you micromanaging_.
 
 You get:
@@ -22,17 +21,16 @@ You get:
 
 - **Auto-extracts** new or changed "facts" from recent user messages
 - **Stores each fact** separately in your Memory database
-- **Consolidates/conflicts** are resolved: more recent info replaces the old
-- Optionally can save assistant responses as memories (`save_assistant_response`)
-- Uses advanced LLMs (like GPT-4o) to understand context and nuance
+- **Auto-maintains** Memories: merges duplicates, resolves conflicts, and prunes old/irrelevant ones
+- Uses advanced LLMs to understand context and nuance
 
 ---
 
 ## 🚀 Installation
 
-1. Make sure your Open WebUI is version `0.5.0` or newer.
+1. Make sure your Open WebUI is version `0.5.0` or newer
 2. Click on _GET_ to add the extension to your Open WebUI deployment
-3. Configure API keys and model (see below).
+3. Configure API keys and model (see below)
 
 ---
 
@@ -40,16 +38,16 @@ You get:
 
 Configure via the Open WebUI extension settings or directly in code:
 
-| Setting                   | Description                                           | Default                  |
-| ------------------------- | ----------------------------------------------------- | ------------------------ |
-| `openai_api_url`          | OpenAI-compatible API endpoint                        | `https://api.openai.com` |
-| `model`                   | LLM model for memory identification                   | `gpt-4o`                 |
-| `api_key`                 | API key for the chosen endpoint                       | _(empty)_                |
-| `related_memories_n`      | Number of related memories to check for consolidation | `5`                      |
-| `related_memories_dist`   | Similarity distance threshold for related memories    | `0.75`                   |
-| `save_assistant_response` | Also auto-save assistant replies as memories          | `false`                  |
-| `messages_to_consider`    | How many recent messages to consider (user+assistant) | `4`                      |
-| `show_status`             | Display memory save status on UI                      | `true`                   |
+| Setting                 | Description                                           | Default                  |
+| ----------------------- | ----------------------------------------------------- | ------------------------ |
+| `openai_api_url`        | OpenAI-compatible API endpoint                        | `https://api.openai.com` |
+| `model`                 | LLM model for memory identification                   | `gpt-5-mini`             |
+| `api_key`               | API key for the chosen endpoint                       | _(empty)_                |
+| `related_memories_n`    | Number of related memories to check for consolidation | `5`                      |
+| `related_memories_dist` | Similarity distance threshold for related memories    | `0.75`                   |
+| `messages_to_consider`  | How many recent messages to consider (user+assistant) | `4`                      |
+| `show_status`           | Display memory save status on UI                      | `true`                   |
+| `debug_mode`            | Enable detailed logging for troubleshooting           | `false`                  |
 
 Supports per-user overrides.
 
@@ -59,8 +57,8 @@ Supports per-user overrides.
 
 - New or changed facts from User's latest message are saved.
 - Explicit "please remember..." requests always create a Memory.
-- Avoids duplicates & merges conflicts by keeping only the latest.
-- Filters out ephemeral/trivial/short-term details.
+- Avoids duplicates & merges conflicts.
+- Automatically deletes and maintains Memories over time.
 
 ### Example
 
@@ -79,7 +77,7 @@ Memory stored:
 ["User hates oranges"]
 ```
 
-See full logic and more cases in code (`IDENTIFY_MEMORIES_PROMPT`, etc).
+See full logic and more cases in code.
 
 ---
 
@@ -88,7 +86,7 @@ See full logic and more cases in code (`IDENTIFY_MEMORIES_PROMPT`, etc).
 ```
 title: Auto Memory
 author: nokodo
-version: 0.5.1
+version: 1.0.0-alpha7
 required_open_webui_version: >= 0.5.0
 repository_url: https://nokodo.net/github/open-webui-extensions
 funding_url: https://ko-fi.com/nokodo
@@ -99,7 +97,6 @@ funding_url: https://ko-fi.com/nokodo
 ## 🙌 Credits
 
 - Created by [nokodo](https://nokodo.net)
-- Based on [@devve](https://openwebui.com/u/devve)’s original design
 
 ---
 
@@ -112,7 +109,13 @@ funding_url: https://ko-fi.com/nokodo
 
 ## 📜 License
 
-MIT @ nokodo
+Source-Available – No Redistribution Without Permission
+Copyright (c) 2025 nokodo
+
+You are free to use, run, and modify this extension for personal or internal purposes.
+You may NOT redistribute, publish, sublicense or sell this extension or any modified version without prior explicit written consent from the author.
+All copies must retain this notice. Provided “AS IS” without warranty.
+Earlier pre-release versions may have been available under different terms.
 
 ---
 

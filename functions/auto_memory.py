@@ -1,13 +1,14 @@
 """
 title: Auto Memory
 author: @nokodo
-description: Automatically identify and store valuable information from chats as Memories.
+description: automatically identify and store valuable information from chats as Memories.
 author_email: nokodo@nokodo.net
 author_url: https://nokodo.net
 repository_url: https://nokodo.net/github/open-webui-extensions
-version: 1.0.0-alpha6
+version: 1.0.0-alpha7
 required_open_webui_version: >= 0.5.0
 funding_url: https://ko-fi.com/nokodo
+license: see extension documentation file `auto_memory.md` (License section) for the licensing terms.
 """
 
 import asyncio
@@ -615,29 +616,19 @@ class Filter:
     def __init__(self):
         self.valves = self.Valves()
 
-    async def auto_memory(
+    async def get_related_memories(
         self,
         messages: list[dict[str, Any]],
         user: UserModel,
-        emitter: Callable[[Any], Awaitable[None]],
-    ) -> None:
-        """Execute the auto-memory extraction and update flow."""
-
-        if len(messages) < 2:
-            self.log("need at least 2 messages for context", level="debug")
-            return
-        self.log(f"flow started. user ID: {user.id}", level="debug")
-
+    ) -> list[Memory]:
         # Extract latest user message for finding related memories
         latest_user_msg = None
         for msg in reversed(messages):
             if msg.get("role") == "user":
                 latest_user_msg = msg.get("content", "")
                 break
-
-        if not latest_user_msg:
-            self.log("no user message found", level="debug")
-            return
+        else:
+            raise ValueError("no user message found in messages")
 
         # Query related memories
         try:
@@ -655,6 +646,24 @@ class Filter:
         related_memories = searchresult_to_memories(results) if results else []
         self.log(f"found {len(related_memories)} related memories", level="info")
         self.log(f"related memories: {related_memories}", level="debug")
+
+        return related_memories
+
+    async def auto_memory(
+        self,
+        messages: list[dict[str, Any]],
+        user: UserModel,
+        emitter: Callable[[Any], Awaitable[None]],
+    ) -> None:
+        """Execute the auto-memory extraction and update flow."""
+
+        if len(messages) < 2:
+            self.log("need at least 2 messages for context", level="debug")
+            return
+        self.log(f"flow started. user ID: {user.id}", level="debug")
+
+        related_memories = await self.get_related_memories(messages=messages, user=user)
+
         stringified_memories = json.dumps(
             [memory.model_dump(mode="json") for memory in related_memories]
         )
@@ -663,7 +672,7 @@ class Filter:
         try:
             action_plan = await self.query_openai_sdk(
                 system_prompt=UNIFIED_SYSTEM_PROMPT,
-                user_message=f"Conversation:\n{conversation_str}\n\nRelated Memories:\n{stringified_memories}",
+                user_message=f"Conversation snippet:\n{conversation_str}\n\nRelated Memories:\n{stringified_memories}",
                 response_model=build_actions_request_model(
                     [m.mem_id for m in related_memories]
                 ),
@@ -693,7 +702,6 @@ class Filter:
         Execute memory actions from the plan.
         Order: delete -> update -> add (prevents conflicts)
         """
-
         self.log("started apply_memory_actions", level="debug")
         actions = action_plan.actions
 
@@ -706,54 +714,66 @@ class Filter:
                 status="in_progress",
             )
 
-        delete_actions = [a for a in actions if a.action == "delete"]
-        update_actions = [a for a in actions if a.action == "update"]
-        add_actions = [a for a in actions if a.action == "add"]
+        # Group actions and define handlers
+        operations = {
+            "delete": {
+                "actions": [a for a in actions if a.action == "delete"],
+                "handler": lambda a: delete_memory_by_id(memory_id=a.id, user=user),
+                "log_msg": lambda a: f"deleted memory. id={a.id}",
+                "error_msg": lambda a, e: f"failed to delete memory {a.id}: {e}",
+                "skip_empty": lambda a: False,
+                "status_verb": "deleted",
+            },
+            "update": {
+                "actions": [a for a in actions if a.action == "update"],
+                "handler": lambda a: update_memory_by_id(
+                    memory_id=a.id,
+                    request=Request(scope={"type": "http", "app": webui_app}),
+                    form_data=MemoryUpdateModel(content=a.new_content),
+                    user=user,
+                ),
+                "log_msg": lambda a: f"updated memory. id={a.id}",
+                "error_msg": lambda a, e: f"failed to update memory {a.id}: {e}",
+                "skip_empty": lambda a: not a.new_content.strip(),
+                "status_verb": "updated",
+            },
+            "add": {
+                "actions": [a for a in actions if a.action == "add"],
+                "handler": lambda a: add_memory(
+                    request=Request(scope={"type": "http", "app": webui_app}),
+                    form_data=AddMemoryForm(content=a.content),
+                    user=user,
+                ),
+                "log_msg": lambda a: f"added memory. content={a.content}",
+                "error_msg": lambda a, e: f"failed to add memory: {e}",
+                "skip_empty": lambda a: not a.content.strip(),
+                "status_verb": "saved",
+            },
+        }
 
-        for action in delete_actions:
-            try:
-                await delete_memory_by_id(memory_id=action.id, user=user)
-                self.log(f"deleted memory. id={action.id}")
-            except Exception as e:
-                raise RuntimeError(f"failed to delete memory {action.id}: {e}")
+        # Process all operations in order
+        counts = {}
+        for op_name, op_config in operations.items():
+            counts[op_name] = 0
+            for action in op_config["actions"]:
+                if op_config["skip_empty"](action):
+                    continue
+                try:
+                    await op_config["handler"](action)
+                    self.log(op_config["log_msg"](action))
+                    counts[op_name] += 1
+                except Exception as e:
+                    raise RuntimeError(op_config["error_msg"](action, e))
 
-        for action in update_actions:
-            try:
-                if action.new_content.strip():
-                    await update_memory_by_id(
-                        memory_id=action.id,
-                        request=Request(scope={"type": "http", "app": webui_app}),
-                        form_data=MemoryUpdateModel(content=action.new_content),
-                        user=user,
-                    )
-                    self.log(f"updated memory. id={action.id}")
-            except Exception as e:
-                raise RuntimeError(f"failed to update memory {action.id}: {e}")
+        # Build status message
+        status_parts = []
+        for op_name, op_config in operations.items():
+            count = counts[op_name]
+            if count > 0:
+                memory_word = "memory" if count == 1 else "memories"
+                status_parts.append(f"{op_config['status_verb']} {count} {memory_word}")
 
-        for action in add_actions:
-            try:
-                if action.content.strip():
-                    await add_memory(
-                        request=Request(scope={"type": "http", "app": webui_app}),
-                        form_data=AddMemoryForm(content=action.content),
-                        user=user,
-                    )
-                    self.log(f"added memory. content={action.content}")
-            except Exception as e:
-                raise RuntimeError(f"failed to add memory: {e}")
-
-        deleted_message = (
-            f"deleted {len(delete_actions)} memories" if delete_actions else ""
-        )
-        updated_message = (
-            f"updated {len(update_actions)} memories" if update_actions else ""
-        )
-        added_message = f"added {len(add_actions)} memories" if add_actions else ""
-        status_parts = [
-            part for part in [deleted_message, updated_message, added_message] if part
-        ]
         status_message = ", ".join(status_parts)
-
         self.log(status_message or "no changes", level="info")
 
         if status_message and self.user_valves.show_status:
