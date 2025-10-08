@@ -40,18 +40,31 @@ You get:
 
 Configure via the Open WebUI extension settings or directly in code:
 
-| Setting                 | Description                                           | Default                  |
-| ----------------------- | ----------------------------------------------------- | ------------------------ |
-| `openai_api_url`        | OpenAI-compatible API endpoint                        | `https://api.openai.com` |
-| `model`                 | LLM model for memory identification                   | `gpt-5-mini`             |
-| `api_key`               | API key for the chosen endpoint                       | _(empty)_                |
-| `related_memories_n`    | Number of related memories to check for consolidation | `5`                      |
-| `related_memories_dist` | Similarity distance threshold for related memories    | `0.75`                   |
-| `messages_to_consider`  | How many recent messages to consider (user+assistant) | `4`                      |
-| `show_status`           | Display memory save status on UI                      | `true`                   |
-| `debug_mode`            | Enable detailed logging for troubleshooting           | `false`                  |
+| Setting                       | Description                                                                                                                                                                                                                | Default                  |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ |
+| `openai_api_url`              | OpenAI-compatible API endpoint                                                                                                                                                                                             | `https://api.openai.com` |
+| `model`                       | LLM model for memory identification                                                                                                                                                                                        | `gpt-5-mini`             |
+| `api_key`                     | API key for the chosen endpoint                                                                                                                                                                                            | _(empty)_                |
+| `related_memories_n`          | Number of related memories to check for consolidation                                                                                                                                                                      | `5`                      |
+| `related_memories_dist`       | Similarity distance threshold for related memories                                                                                                                                                                         | `0.75`                   |
+| `messages_to_consider`        | How many recent messages to consider (user+assistant)                                                                                                                                                                      | `4`                      |
+| `allow_unsafe_user_overrides` | **SECURITY WARNING**: Allow users to override API URL/model without providing their own API key. This could allow users to steal your API key or use expensive models at your expense. Only enable if you trust all users. | `false`                  |
+| `debug_mode`                  | Enable detailed logging for troubleshooting                                                                                                                                                                                | `false`                  |
 
-Supports per-user overrides.
+### User-Level Settings
+
+Users can override settings individually:
+
+| Setting                | Description                                    |
+| ---------------------- | ---------------------------------------------- |
+| `enabled`              | Whether to enable Auto Memory for this user    |
+| `show_status`          | Display memory save status on UI               |
+| `openai_api_url`       | User-specific API endpoint (overrides global)  |
+| `model`                | User-specific model (overrides global)         |
+| `api_key`              | User-specific API key (overrides global)       |
+| `messages_to_consider` | User-specific message count (overrides global) |
+
+**Security Note**: User overrides for `openai_api_url` and `model` require the user to provide their own `api_key`. Without it, the admin's global settings are used for security. Admins can enable `allow_unsafe_user_overrides` to bypass this check, but this is not recommended.
 
 ---
 
@@ -88,7 +101,7 @@ See full logic and more cases in code.
 ```
 title: Auto Memory
 author: nokodo
-version: 1.0.0-alpha9
+version: 1.0.0-alpha11
 required_open_webui_version: >= 0.5.0
 repository_url: https://nokodo.net/github/open-webui-extensions
 funding_url: https://ko-fi.com/nokodo

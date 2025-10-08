@@ -5,7 +5,7 @@ description: automatically identify and store valuable information from chats as
 author_email: nokodo@nokodo.net
 author_url: https://nokodo.net
 repository_url: https://nokodo.net/github/open-webui-extensions
-version: 1.0.0-alpha10
+version: 1.0.0-alpha11
 required_open_webui_version: >= 0.5.0
 funding_url: https://ko-fi.com/nokodo
 license: see extension documentation file `auto_memory.md` (License section) for the licensing terms.
@@ -571,12 +571,20 @@ class Filter:
             default=0.75,
             description="distance of memories to consider for updates. Smaller number will be more closely related.",
         )
+        allow_unsafe_user_overrides: bool = Field(
+            default=False,
+            description="SECURITY WARNING: allow users to override API URL/model without providing their own API key. this could allow users to steal your API key or use expensive models at your expense. only enable if you trust all users.",
+        )
         debug_mode: bool = Field(
             default=False,
             description="enable debug logging",
         )
 
     class UserValves(BaseModel):
+        enabled: bool = Field(
+            default=True,
+            description="whether to enable Auto Memory for this user",
+        )
         show_status: bool = Field(
             default=True, description="show status of the action."
         )
@@ -664,16 +672,28 @@ class Filter:
         - Returns: model instance or raw string
         """
 
-        api_url = (
-            self.user_valves.openai_api_url or self.valves.openai_api_url
+        user_has_own_key = bool(
+            self.user_valves.api_key and self.user_valves.api_key.strip()
+        )
+
+        api_url = self.get_restricted_user_valve(
+            user_valve_value=self.user_valves.openai_api_url,
+            admin_fallback=self.valves.openai_api_url,
+            authorization_check=user_has_own_key,
         ).rstrip("/")
+
+        model_name = self.get_restricted_user_valve(
+            user_valve_value=self.user_valves.model,
+            admin_fallback=self.valves.model,
+            authorization_check=user_has_own_key,
+        )
+        api_key = self.user_valves.api_key or self.valves.api_key
+
         hostname = urlparse(api_url).hostname or ""
         enable_structured_outputs = (
             hostname == "api.openai.com" and response_model is not None
         )
 
-        model_name = self.user_valves.model or self.valves.model
-        api_key = self.user_valves.api_key or self.valves.api_key
         temperature = 0.3 if "gpt-5" not in model_name else 1
 
         client = OpenAI(api_key=api_key, base_url=api_url)
@@ -729,6 +749,47 @@ class Filter:
 
     def __init__(self):
         self.valves = self.Valves()
+
+    def get_restricted_user_valve(
+        self,
+        user_valve_value: Optional[str],
+        admin_fallback: str,
+        authorization_check: Optional[bool] = None,
+    ) -> str:
+        """
+        Get user valve value with security checks.
+
+        Args:
+            user_valve_value: The user's valve value to check
+            admin_fallback: Admin's fallback value
+            authorization_check: The valve value to check for authorization (e.g., user's API key)
+
+        Returns user's value only if:
+        1. authorization_check is provided and non-empty, OR
+        2. Admin allows unsafe overrides
+
+        Otherwise returns admin fallback.
+        """
+        if authorization_check is None:
+            authorization_check = False
+
+        if authorization_check:
+            return user_valve_value or admin_fallback
+
+        if self.valves.allow_unsafe_user_overrides:
+            if user_valve_value:
+                self.log(
+                    "unsafe overrides enabled - allowing user override with admin credentials",
+                    level="warning",
+                )
+            return user_valve_value or admin_fallback
+
+        if user_valve_value:
+            self.log(
+                "user attempted override without authorization - using admin defaults for security",
+                level="warning",
+            )
+        return admin_fallback
 
     async def get_related_memories(
         self,
@@ -942,6 +1003,10 @@ class Filter:
             raise ValueError("invalid user valves")
         self.user_valves = cast(Filter.UserValves, self.user_valves)
         self.log(f"user valves = {self.user_valves}", level="debug")
+
+        if not self.user_valves.enabled:
+            self.log("component was disabled by user, skipping", level="info")
+            return body
 
         asyncio.create_task(
             self.auto_memory(
