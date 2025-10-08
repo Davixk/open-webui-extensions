@@ -13,7 +13,9 @@ You get:
 
 - Seamless journaling of your important info
 - Smarter, context-rich AI assistance
-- No more “please remember X” (unless you _want_ to!)
+- No “please remember X” (unless you _want_ to!)
+
+> **Note:** Make sure to enable the Memory feature in your user profile settings (Profile → Settings → Personalization) to allow models to access your memories!
 
 <br>
 
@@ -86,7 +88,7 @@ See full logic and more cases in code.
 ```
 title: Auto Memory
 author: nokodo
-version: 1.0.0-alpha7
+version: 1.0.0-alpha9
 required_open_webui_version: >= 0.5.0
 repository_url: https://nokodo.net/github/open-webui-extensions
 funding_url: https://ko-fi.com/nokodo

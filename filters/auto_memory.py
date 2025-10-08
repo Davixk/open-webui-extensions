@@ -5,7 +5,7 @@ description: automatically identify and store valuable information from chats as
 author_email: nokodo@nokodo.net
 author_url: https://nokodo.net
 repository_url: https://nokodo.net/github/open-webui-extensions
-version: 1.0.0-alpha8
+version: 1.0.0-alpha9
 required_open_webui_version: >= 0.5.0
 funding_url: https://ko-fi.com/nokodo
 license: see extension documentation file `auto_memory.md` (License section) for the licensing terms.
@@ -29,7 +29,7 @@ from typing import (
 )
 from urllib.parse import urlparse
 
-from fastapi.requests import Request
+from fastapi import HTTPException, Request
 from open_webui.main import app as webui_app
 from open_webui.models.users import UserModel, Users
 from open_webui.retrieval.vector.main import SearchResult
@@ -721,6 +721,16 @@ class Filter:
                 ),
                 user=user,
             )
+        except HTTPException as e:
+            if e.status_code == 404:
+                self.log("no related memories found", level="info")
+                results = None
+            else:
+                self.log(
+                    f"failed to query memories due to HTTP error {e.status_code}: {e.detail}",
+                    level="error",
+                )
+                raise RuntimeError("failed to query memories") from e
         except Exception as e:
             self.log(f"failed to query memories: {e}", level="error")
             raise RuntimeError("failed to query memories") from e
