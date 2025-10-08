@@ -5,7 +5,7 @@ description: automatically identify and store valuable information from chats as
 author_email: nokodo@nokodo.net
 author_url: https://nokodo.net
 repository_url: https://nokodo.net/github/open-webui-extensions
-version: 1.0.0-alpha7
+version: 1.0.0-alpha8
 required_open_webui_version: >= 0.5.0
 funding_url: https://ko-fi.com/nokodo
 license: see extension documentation file `auto_memory.md` (License section) for the licensing terms.
@@ -67,7 +67,7 @@ Your job is to determine what actions to take on the memory collection based on 
 4. If memories are exact duplicates or direct conflicts about the same topic, **consolidate them by updating or deleting** as appropriate.
 5. **Link related Memories** by including brief references when relevant to maintain semantic connections.
 6. Capture anything valuable for **personalizing future interactions** with the User.
-7. Honor **explicit user requests** to "remember", "forget", or "update" information.
+7. Always **honor memory requests**, whether direct from the User ("remember this", "forget that", "update X") or implicit through the Assistant's commitment ("I'll remember that", "I'll keep that in mind"). Treat these as strong signals to store, update, or delete the referenced information.
 8. Each memory must be **self-contained and understandable without external context.** Avoid ambiguous references like "it", "that", or "there" - instead, include the specific subject being referenced. For example, prefer "User's new TV broke" over "It broke".
 9. Be alert to **sarcasm, jokes, and non-literal language.** If the User's statement appears to be hyperbole, sarcasm, or non-literal rather than a factual claim, do not store it as a memory.
 10. When determining which memory is "most recent" for conflict resolution, **refer to the `created_at` or `update_at` timestamps** from the existing memories.
@@ -121,11 +121,36 @@ When updating or deleting, ONLY use the memory ID from the related memories list
 </actions_to_take>
 
 <consolidation_rules>
-- Only combine memories if they are exact duplicates or direct conflicts about the same topic
-- For duplicates: keep only the oldest (based on `created_at` timestamp)
-- For conflicts: update to reflect the latest information
-- For similar but distinct facts: keep them separate (e.g., "likes oranges" vs "likes ripe oranges")
-- Past events remain as separate journal entries unless explicitly contradicted
+**Core Principle**: Default to keeping memories separate and granular for precise retrieval. Only consolidate when it meaningfully improves memory quality and coherence.
+
+**When to CONSOLIDATE (merge or update existing memories):**
+
+1. **Exact Duplicates** - Same fact, different wording
+   - Action: Delete the newer duplicate, keep the oldest (based on `created_at` timestamp)
+   - Example: "User prefers Python for scripting" + "User likes Python for scripting tasks" → Keep oldest, delete duplicate
+
+2. **Direct Conflicts** - Contradictory facts about the same subject
+   - Action: Update the older memory to reflect the latest information, or delete if completely obsolete
+   - Example: "User lives in San Francisco" conflicts with "User moved to Mountain View" → Update or delete old info
+
+3. **Inseparable Facts** - Multiple facts about the same entity that would be incomplete or confusing if retrieved separately
+   - Action: Merge into the oldest memory as a single self-contained statement, then delete the redundant memories
+   - Test: Would retrieving one fact without the other create confusion or require additional context?
+   - Example: "User's cat is named Luna" + "User's cat is a Siamese" → "User has a Siamese cat named Luna"
+   - Counter-example: "User works at Google" + "User started at Google in 2023" → Keep separate (start date is distinct from employment)
+
+**When to KEEP SEPARATE:**
+
+- **Similar but distinct facts** - Related information that represents different aspects or time periods
+  - Example: "User works at Google" vs "User got promoted to team lead" (employment vs career progression)
+  
+- **Past events as journal entries** - Historical facts that provide temporal context
+  - Example: "User bought a Samsung TV" and "User's Samsung TV broke" (separate events in time)
+  
+- **Related but separable facts** - Facts about the same topic that are meaningful independently
+  - Example: "User loves dogs" vs "User has a golden retriever named Max" (general preference vs specific pet)
+
+**Guiding Question**: If vector search retrieves only one of these memories, would the user experience be degraded? If yes, consider merging. If no, keep separate.
 </consolidation_rules>
 
 <examples>
@@ -274,6 +299,63 @@ Output:
 {
   "actions": [
     {"action": "add", "content": "User's Samsung OLED TV, that was recently purchased, just broke down with a black screen"}
+  ]
+}
+
+**Example 7 - Maintenance of unrelated memories**
+Conversation:
+-2. user: ```Can you help me write a Python function to sort a list?```
+-1. assistant: ```Of course! Here's a simple example using sorted()...```
+
+Related Memories:
+[
+  {"mem_id": "234", "created_at": "2024-02-10T09:00:00", "update_at": "2024-02-10T09:00:00", "content": "User prefers Python for scripting"},
+  {"mem_id": "567", "created_at": "2024-03-15T14:30:00", "update_at": "2024-03-15T14:30:00", "content": "User likes Python for scripting tasks"},
+  {"mem_id": "890", "created_at": "2024-01-05T10:00:00", "update_at": "2024-01-05T10:00:00", "content": "User knows Python programming"},
+  {"mem_id": "123", "created_at": "2024-01-10T11:00:00", "update_at": "2024-01-10T11:00:00", "content": "User's name is Jake"},
+  {"mem_id": "456", "created_at": "2024-01-15T08:00:00", "update_at": "2024-01-15T08:00:00", "content": "User's cat is named Luna"},
+  {"mem_id": "789", "created_at": "2024-02-20T10:00:00", "update_at": "2024-02-20T10:00:00", "content": "User's cat is a Siamese"}
+]
+
+**Analysis**
+- The current conversation is just a technical question about Python - no new personal information
+- However, the related memories show issues that need maintenance. We apply the relevant Memory rules:
+  1. **Delete bad memory**: Memory 123 contains the user's name, which violates the rule "never store user/assistant names" - should be deleted
+  2. **Delete duplicate**: Memory 234 and 567 express essentially the same preference (Python for scripting) - keep older (234), delete newer duplicate (567)
+  3. **Merge inseparable facts**: Memory 456 and 789 are about the same cat and should ALWAYS be retrieved together (cat's name + breed) - merge into oldest memory (456)
+- Memory 890 is distinct (knowledge vs preference) so it should remain
+
+Output:
+{
+  "actions": [
+    {"action": "delete", "id": "123"},
+    {"action": "delete", "id": "567"},
+    {"action": "update", "id": "456", "new_content": "User has a Siamese cat named Luna"},
+    {"action": "delete", "id": "789"}
+  ]
+}
+
+**Example 8 - Explicit memory request**
+Conversation:
+-4. user: ```Hey, do you remember what my dog's name is?```
+-3. assistant: ```I don't have that information. Could you tell me?```
+-2. user: ```Sure! His name is Max and he's a golden retriever.```
+-1. assistant: ```What a lovely name! Max sounds like a wonderful companion. I'll remember that.```
+
+Related Memories:
+[
+  {"mem_id": "111", "created_at": "2024-01-20T10:00:00", "update_at": "2024-01-20T10:00:00", "content": "User loves dogs"}
+]
+
+**Analysis**
+- Assistant explicitly expresses intent to remember something. We ALWAYS honor explicit memory requests.
+- User provides info about his dog's name and breed these can be stored as a single memory as they are closely related
+- The existing memory about loving dogs is related but doesn't conflict
+
+Output:
+{
+  "actions": [
+    {"action": "add", "content": "User has a golden retriever named Max"}
   ]
 }
 </examples>\
