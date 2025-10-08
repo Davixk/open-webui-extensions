@@ -5,7 +5,7 @@ description: automatically identify and store valuable information from chats as
 author_email: nokodo@nokodo.net
 author_url: https://nokodo.net
 repository_url: https://nokodo.net/github/open-webui-extensions
-version: 1.0.0-alpha9
+version: 1.0.0-alpha10
 required_open_webui_version: >= 0.5.0
 funding_url: https://ko-fi.com/nokodo
 license: see extension documentation file `auto_memory.md` (License section) for the licensing terms.
@@ -123,7 +123,7 @@ When updating or deleting, ONLY use the memory ID from the related memories list
 <consolidation_rules>
 **Core Principle**: Default to keeping memories separate and granular for precise retrieval. Only consolidate when it meaningfully improves memory quality and coherence.
 
-**When to CONSOLIDATE (merge or update existing memories):**
+**When to CONSOLIDATE (merge existing memories):**
 
 1. **Exact Duplicates** - Same fact, different wording
    - Action: Delete the newer duplicate, keep the oldest (based on `created_at` timestamp)
@@ -139,9 +139,11 @@ When updating or deleting, ONLY use the memory ID from the related memories list
    - Example: "User's cat is named Luna" + "User's cat is a Siamese" → "User has a Siamese cat named Luna"
    - Counter-example: "User works at Google" + "User started at Google in 2023" → Keep separate (start date is distinct from employment)
 
-**When to KEEP SEPARATE:**
+**When to KEEP SEPARATE (or split if wrongly combined):**
 
-- **Similar but distinct facts** - Related information that represents different aspects or time periods
+Facts should remain separate when they represent distinct, independently-retrievable information:
+
+- **Similar but distinct facts** - Related information representing different aspects or time periods
   - Example: "User works at Google" vs "User got promoted to team lead" (employment vs career progression)
   
 - **Past events as journal entries** - Historical facts that provide temporal context
@@ -149,6 +151,8 @@ When updating or deleting, ONLY use the memory ID from the related memories list
   
 - **Related but separable facts** - Facts about the same topic that are meaningful independently
   - Example: "User loves dogs" vs "User has a golden retriever named Max" (general preference vs specific pet)
+
+If an existing memory wrongly combines separable facts: UPDATE the existing memory to contain one fact (preserves timestamp), then ADD new memories for the other facts. Deleting the original would lose the timestamp.
 
 **Guiding Question**: If vector search retrieves only one of these memories, would the user experience be degraded? If yes, consider merging. If no, keep separate.
 </consolidation_rules>
@@ -302,7 +306,7 @@ Output:
   ]
 }
 
-**Example 7 - Maintenance of unrelated memories**
+**Example 7 - Memory maintenance: merging and deleting duplicates and bad memories**
 Conversation:
 -2. user: ```Can you help me write a Python function to sort a list?```
 -1. assistant: ```Of course! Here's a simple example using sorted()...```
@@ -356,6 +360,34 @@ Output:
 {
   "actions": [
     {"action": "add", "content": "User has a golden retriever named Max"}
+  ]
+}
+
+**Example 9 - Memory maintenance: splitting and adding context**
+Conversation:
+-2. user: ```Sadie invited me to her birthday party next week, I'm excited!```
+-1. assistant: ```That's wonderful! I hope you have a great time at Sadie's party.```
+
+Related Memories:
+[
+  {"mem_id": "555", "created_at": "2024-02-10T10:00:00", "update_at": "2024-02-10T10:00:00", "content": "User has an old time friend named Sadie who they grew up with, and whose mother is a long time friend of User's mother"},
+  {"mem_id": "666", "created_at": "2024-02-12T14:00:00", "update_at": "2024-02-12T14:00:00", "content": "The two mothers also did their english courses together"}
+]
+
+**Analysis**
+- User mentions Sadie's party (new event to store)
+- Memory 555 combines two separable facts: User's friendship with Sadie (including growing up together), and the mothers' friendship
+- Memory 666 lacks clear context - "the two mothers" is ambiguous without memory 555
+- This is a **passive maintenance scenario**: even though the conversation doesn't directly discuss the memory issues, we should fix them
+- Actions: update 555 to remove the mothers' friendship, add new memory for mothers' relationship, add context to 666
+
+Output:
+{
+  "actions": [
+    {"action": "add", "content": "User is invited to Sadie's birthday party next week"},
+    {"action": "update", "id": "555", "new_content": "User has an old friend named Sadie who they grew up with"},
+    {"action": "add", "content": "User's mother and Sadie's mother are long time friends"},
+    {"action": "update", "id": "666", "new_content": "User's mother and Sadie's mother did their english courses together"}
   ]
 }
 </examples>\
