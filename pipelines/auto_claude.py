@@ -2,7 +2,7 @@
 title: Auto Anthropic
 author: @nokodo
 description: clean, plug and play Claude manifold pipeline with support for all the latest features from Anthropic
-version: 0.1.0-alpha4
+version: 0.1.0-alpha5
 required_open_webui_version: ">= 0.5.0"
 license: see extension documentation file `auto_claude.md` (License section) for the licensing terms.
 repository_url: https://nokodo.net/github/open-webui-extensions
@@ -26,7 +26,9 @@ from typing import (
 )
 
 import requests
+from anthropic import Anthropic
 from open_webui.utils.misc import pop_system_message
+from openai import OpenAI
 from pydantic import BaseModel, Field
 
 LogLevel = Literal["debug", "info", "warning", "error"]
@@ -89,6 +91,205 @@ MAX_IMAGE_SIZE = 5 * 1024 * 1024  # 5 MB
 MAX_PDF_SIZE = 32 * 1024 * 1024  # 32 MB
 RETRY_STATUS_CODES = {429, 500, 502, 503, 504}
 MAX_RETRIES = 5
+
+
+async def query_anthropic_sdk(
+    api_key: str,
+    model: str,
+    messages: list[dict[str, Any]],
+    system_message: Optional[str],
+    max_tokens: int,
+    temperature: float,
+    top_p: Optional[float],
+    stop: Optional[list[str]],
+    tools: Optional[list[dict[str, Any]]],
+    tool_choice: Optional[dict[str, Any]],
+    stream: bool,
+    thinking_config: Optional[dict[str, Any]],
+) -> Union[str, AsyncIterator[dict[str, Any]]]:
+    """Query Anthropic SDK with native support for both streaming and non-streaming.
+
+    This is a standalone function that uses the official Anthropic Python SDK.
+    Tool calls work properly with both streaming and non-streaming modes.
+
+    Args:
+        api_key: Anthropic API key
+        model: Model name (e.g., "claude-sonnet-4-5-20250929")
+        messages: List of message dicts with role and content
+        system_message: Optional system prompt
+        max_tokens: Maximum tokens to generate
+        temperature: Sampling temperature
+        top_p: Nucleus sampling parameter
+        stop: Stop sequences
+        tools: List of tool definitions in OpenAI format (will be converted)
+        tool_choice: Tool choice configuration
+        stream: Whether to stream responses
+        thinking_config: Extended thinking configuration
+
+    Returns:
+        If stream=False: Complete response as string, or JSON string with tool_calls
+        If stream=True: AsyncIterator yielding dicts with {"type": "content"|"tool_calls", ...}
+    """
+    client = Anthropic(api_key=api_key)
+
+    # Convert tools from OpenAI format to Anthropic format if provided
+    anthropic_tools = None
+    if tools:
+        anthropic_tools = []
+        for tool in tools:
+            if isinstance(tool, dict) and tool.get("type") == "function":
+                func = tool.get("function", {})
+                anthropic_tools.append(
+                    {
+                        "name": func.get("name"),
+                        "description": func.get("description", ""),
+                        "input_schema": func.get("parameters", {}),
+                    }
+                )
+            else:
+                # Already in Anthropic format
+                anthropic_tools.append(tool)
+
+    # Build extra kwargs for thinking
+    extra_kwargs = {}
+    if thinking_config:
+        extra_kwargs["thinking"] = thinking_config
+
+    if stream:
+        # Return async iterator for streaming
+        return _stream_anthropic_sdk(
+            client=client,
+            model=model,
+            messages=messages,
+            system_message=system_message,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            stop=stop,
+            tools=anthropic_tools,
+            tool_choice=tool_choice,
+            extra_kwargs=extra_kwargs,
+        )
+    else:
+        # Non-streaming: call API and return result
+        try:
+            # Build kwargs dynamically to avoid None values
+            kwargs: dict[str, Any] = {
+                "model": model,
+                "messages": messages,  # type: ignore
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+            }
+
+            if system_message:
+                kwargs["system"] = system_message
+            if top_p is not None:
+                kwargs["top_p"] = top_p
+            if stop:
+                kwargs["stop_sequences"] = stop
+            if anthropic_tools:
+                kwargs["tools"] = anthropic_tools  # type: ignore
+            if tool_choice:
+                kwargs["tool_choice"] = tool_choice  # type: ignore
+
+            kwargs.update(extra_kwargs)
+
+            response = client.messages.create(**kwargs)
+
+            # Check for tool use
+            tool_use_blocks = [
+                block for block in response.content if block.type == "tool_use"
+            ]
+
+            if tool_use_blocks:
+                # Return tool calls as JSON
+                tool_calls = [
+                    {
+                        "id": block.id,
+                        "type": "function",
+                        "function": {
+                            "name": block.name,
+                            "arguments": json.dumps(block.input),
+                        },
+                    }
+                    for block in tool_use_blocks
+                ]
+                return json.dumps({"tool_calls": tool_calls})
+
+            # Return text content
+            text_blocks = [block for block in response.content if block.type == "text"]
+            return text_blocks[0].text if text_blocks else ""
+
+        except Exception as e:
+            return f"Error: {e}"
+
+
+async def _stream_anthropic_sdk(
+    client: Anthropic,
+    model: str,
+    messages: list[dict[str, Any]],
+    system_message: Optional[str],
+    max_tokens: int,
+    temperature: float,
+    top_p: Optional[float],
+    stop: Optional[list[str]],
+    tools: Optional[list[dict[str, Any]]],
+    tool_choice: Optional[dict[str, Any]],
+    extra_kwargs: dict[str, Any],
+) -> AsyncIterator[dict[str, Any]]:
+    """Stream response from Anthropic SDK and yield content chunks and tool calls."""
+    try:
+        # Build kwargs dynamically
+        kwargs: dict[str, Any] = {
+            "model": model,
+            "messages": messages,  # type: ignore
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+
+        if system_message:
+            kwargs["system"] = system_message
+        if top_p is not None:
+            kwargs["top_p"] = top_p
+        if stop:
+            kwargs["stop_sequences"] = stop
+        if tools:
+            kwargs["tools"] = tools  # type: ignore
+        if tool_choice:
+            kwargs["tool_choice"] = tool_choice  # type: ignore
+
+        kwargs.update(extra_kwargs)
+
+        with client.messages.stream(**kwargs) as stream:
+            for event in stream:
+                # Yield text content as it streams
+                if event.type == "content_block_delta":
+                    delta = event.delta
+                    # Check if delta has text attribute (TextDelta)
+                    if hasattr(delta, "text") and delta.text:  # type: ignore
+                        yield {"type": "content", "content": delta.text}  # type: ignore
+
+                # Collect tool use when complete
+                elif event.type == "content_block_stop":
+                    content_block = event.content_block  # type: ignore
+                    if hasattr(content_block, "type") and content_block.type == "tool_use":  # type: ignore
+                        tool_call = {
+                            "id": content_block.id,  # type: ignore
+                            "type": "function",
+                            "function": {
+                                "name": content_block.name,  # type: ignore
+                                "arguments": json.dumps(content_block.input),  # type: ignore
+                            },
+                        }
+                        yield {"type": "tool_calls", "tool_calls": [tool_call]}
+
+    except Exception as e:
+        yield {"type": "error", "error": str(e)}
+
+
+# ============================================================================
+# Pipeline Class
+# ============================================================================
 
 
 class Pipe:
@@ -184,14 +385,34 @@ class Pipe:
             if isinstance(content, list):
                 for part in content:
                     try:
-                        if part.get("type") == "text":
+                        part_type = part.get("type")
+                        if part_type == "text":
                             parts.append({"type": "text", "text": part.get("text", "")})
-                        elif part.get("type") == "image_url":
+                        elif part_type == "image_url":
                             parts.append(self._process_image(part))
-                        elif part.get("type") == "pdf_url":
+                        elif part_type == "pdf_url":
                             pdf_part = self._process_pdf(part)
                             if pdf_part:
                                 parts.append(pdf_part)
+                        elif part_type == "tool_result":
+                            # Handle tool results from function calls
+                            parts.append(
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": part.get("tool_use_id"),
+                                    "content": part.get("content", ""),
+                                }
+                            )
+                        elif part_type == "tool_use":
+                            # Handle tool use blocks (assistant's tool calls)
+                            parts.append(
+                                {
+                                    "type": "tool_use",
+                                    "id": part.get("id"),
+                                    "name": part.get("name"),
+                                    "input": part.get("input", {}),
+                                }
+                            )
                     except Exception as e:
                         self.log(f"Content part skipped: {e}", "warning")
             else:
@@ -277,27 +498,281 @@ class Pipe:
             "content-type": "application/json",
         }
 
+    async def anthropic_sdk_wrapper(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        system_message: Optional[str],
+        max_tokens: int,
+        temperature: float,
+        top_p: Optional[float],
+        stop: Optional[list[str]],
+        tools: Optional[list[dict[str, Any]]],
+        tool_choice: Optional[dict[str, Any]],
+        stream: bool,
+        thinking_config: Optional[dict[str, Any]],
+    ) -> Union[str, AsyncIterator[dict[str, Any]]]:
+        """Wrapper method that injects API key and calls the standalone Anthropic SDK function.
+
+        This is a thin wrapper around query_anthropic_sdk() that provides the API key from valves.
+        """
+        return await query_anthropic_sdk(
+            api_key=self.valves.ANTHROPIC_API_KEY,
+            model=model,
+            messages=messages,
+            system_message=system_message,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            stop=stop,
+            tools=tools,
+            tool_choice=tool_choice,
+            stream=stream,
+            thinking_config=thinking_config,
+        )
+
+    async def execute_tool(
+        self,
+        tool_call: dict[str, Any],
+        tools: dict[str, Any],
+        __event_emitter__: Optional[Callable[[Any], Awaitable[None]]],
+    ) -> dict[str, Any]:
+        """Execute a single tool call and return the result."""
+        tool_name = tool_call["function"]["name"]
+
+        try:
+            tool = tools.get(tool_name)
+            if not tool:
+                raise ValueError(f"Tool '{tool_name}' not found")
+
+            arguments_str = tool_call["function"]["arguments"]
+            if arguments_str:
+                parsed_args = json.loads(arguments_str)
+                if __event_emitter__:
+                    await emit_status(
+                        f"Executing tool '{tool_name}' with arguments: {parsed_args}",
+                        __event_emitter__,
+                        "in_progress",
+                    )
+            else:
+                parsed_args = {}
+
+            # Execute the tool
+            result = await tool["callable"](**parsed_args)
+
+            return {
+                "tool_call": tool_call,
+                "result": json.dumps(result),
+                "error": None,
+            }
+        except json.JSONDecodeError:
+            return {
+                "tool_call": tool_call,
+                "result": None,
+                "error": f"Failed to parse arguments for tool '{tool_name}'",
+            }
+        except Exception as e:
+            self.log(f"Error executing tool '{tool_name}': {e}", "error")
+            return {
+                "tool_call": tool_call,
+                "result": None,
+                "error": f"Error executing tool '{tool_name}': {str(e)}",
+            }
+
+    async def query_openai_sdk(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        system_message: Optional[str],
+        max_tokens: int,
+        temperature: float,
+        top_p: Optional[float],
+        stop: Optional[list[str]],
+        tools: Optional[list[dict[str, Any]]],
+        tool_choice: Optional[dict[str, Any]],
+        stream: bool,
+        thinking_config: Optional[dict[str, Any]],
+    ) -> Union[str, AsyncIterator[dict[str, Any]]]:
+        """Query OpenAI SDK (pointing to Anthropic API) with support for both streaming and non-streaming"""
+        client = OpenAI(
+            api_key=self.valves.ANTHROPIC_API_KEY,
+            base_url="https://api.anthropic.com/v1/",
+        )
+
+        # Process messages
+        processed_messages = self._process_messages(messages)
+
+        # Add system message
+        if system_message:
+            processed_messages = [
+                {"role": "system", "content": system_message}
+            ] + processed_messages
+
+        # Build extra_body
+        extra_body = {}
+        if thinking_config:
+            extra_body["thinking"] = thinking_config
+
+        if stream:
+            # Return async iterator for streaming
+            return self._stream_openai_sdk(
+                client=client,
+                model=model,
+                messages=processed_messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                stop=stop,
+                tools=tools,
+                tool_choice=tool_choice,
+                extra_body=extra_body if extra_body else None,
+            )
+        else:
+            # Non-streaming: return complete response
+            try:
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=processed_messages,  # type: ignore
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    top_p=top_p,
+                    stop=stop or None,
+                    tools=tools,  # type: ignore
+                    tool_choice=tool_choice,  # type: ignore
+                    stream=False,
+                    extra_body=extra_body if extra_body else None,
+                )
+
+                # Handle tool calls
+                if (
+                    hasattr(response.choices[0].message, "tool_calls")
+                    and response.choices[0].message.tool_calls
+                ):
+                    tool_calls = [
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.function.name,
+                                "arguments": tc.function.arguments,
+                            },
+                        }
+                        for tc in response.choices[0].message.tool_calls
+                    ]
+                    return json.dumps({"tool_calls": tool_calls})
+
+                # Return message content
+                return response.choices[0].message.content or ""
+
+            except Exception as e:
+                self.log(f"OpenAI SDK request failed: {e}", "error")
+                return f"Error: {e}"
+
+    async def _stream_openai_sdk(
+        self,
+        client: OpenAI,
+        model: str,
+        messages: list[dict[str, Any]],
+        max_tokens: int,
+        temperature: float,
+        top_p: Optional[float],
+        stop: Optional[list[str]],
+        tools: Optional[list[dict[str, Any]]],
+        tool_choice: Optional[dict[str, Any]],
+        extra_body: Optional[dict[str, Any]],
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Stream response from OpenAI SDK and yield content chunks and tool calls."""
+        stream = client.chat.completions.create(
+            model=model,
+            messages=messages,  # type: ignore
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            stop=stop or None,
+            tools=tools,  # type: ignore
+            tool_choice=tool_choice,  # type: ignore
+            stream=True,
+            extra_body=extra_body,
+        )
+
+        tool_calls_buffer: dict[int, dict[str, Any]] = {}
+
+        for chunk in stream:
+            self.log(f"Received chunk: {chunk}", "debug")
+
+            if not chunk.choices:
+                continue
+
+            delta = chunk.choices[0].delta
+
+            # Yield content
+            if delta.content:
+                yield {"type": "content", "content": delta.content}
+
+            # Collect tool calls
+            if delta.tool_calls:
+                for tool_call in delta.tool_calls:
+                    idx = tool_call.index
+                    if idx not in tool_calls_buffer:
+                        tool_calls_buffer[idx] = {
+                            "id": tool_call.id or "",
+                            "type": "function",
+                            "function": {"name": "", "arguments": ""},
+                        }
+
+                    if tool_call.id:
+                        tool_calls_buffer[idx]["id"] = tool_call.id
+                    if tool_call.function:
+                        if tool_call.function.name:
+                            tool_calls_buffer[idx]["function"][
+                                "name"
+                            ] = tool_call.function.name
+                        if tool_call.function.arguments:
+                            tool_calls_buffer[idx]["function"][
+                                "arguments"
+                            ] += tool_call.function.arguments
+
+        # Yield tool calls at end if any
+        if tool_calls_buffer:
+            tool_calls_list = [
+                tool_calls_buffer[i] for i in sorted(tool_calls_buffer.keys())
+            ]
+            yield {"type": "tool_calls", "tool_calls": tool_calls_list}
+
     async def pipe(
         self,
         body: dict[str, Any],
         __event_emitter__: Optional[Callable[[Any], Awaitable[None]]] = None,
+        __tools__: Optional[dict[str, Any]] = None,
+        __task__: Optional[str] = None,
     ) -> Union[str, Generator[str, None, None], AsyncIterator[str]]:
         """Main pipeline entry point."""
 
         self.log(f"pipe called with body: {body}", level="debug")
 
+        # If Open WebUI is trying to handle tools, opt out and do it ourselves
+        if __task__ == "function_calling":
+            yield ""
+            return
+
         if not self.valves.ANTHROPIC_API_KEY:
             error_msg = "Error: Anthropic API key not configured"
             if __event_emitter__:
                 await emit_status(error_msg, __event_emitter__, "error")
-            return error_msg
-
-        # Remove unnecessary keys
-        for key in ["user", "chat_id", "title"]:
-            body.pop(key, None)
+            yield error_msg
+            return
 
         # Extract system message and parse model
         system_message, messages = pop_system_message(body.get("messages", []))
+
+        # Convert system_message to string if it's a dict
+        system_str = None
+        if system_message:
+            if isinstance(system_message, dict):
+                system_str = system_message.get("content", str(system_message))
+            else:
+                system_str = str(system_message)
+
         model_full = body.get("model", "anthropic/claude-sonnet-4-5-20250929")
 
         # Clean model name
@@ -305,30 +780,6 @@ class Pipe:
         thinking_requested = model.endswith("-thinking")
         if thinking_requested:
             model = model.replace("-thinking", "")
-
-        processed_messages = self._process_messages(messages)
-
-        # Build base payload
-        payload: dict[str, Any] = {
-            "model": model,
-            "messages": processed_messages,
-            "max_tokens": body.get("max_tokens", 64_000),
-            "temperature": body.get("temperature", 0.7),
-            "stop_sequences": body.get("stop", []),
-            "stream": body.get("stream", False),
-        }
-
-        # Add system message if present
-        if system_message:
-            payload["system"] = str(system_message)
-
-        # Add optional parameters only if explicitly provided
-        if "top_k" in body:
-            payload["top_k"] = body["top_k"]
-
-        # Handle top_p (mutually exclusive with temperature in some cases)
-        if "top_p" in body:
-            payload["top_p"] = body["top_p"]
 
         # Handle reasoning effort for Claude 4 models (all our models support this)
         reasoning_effort = body.get("reasoning_effort", "none")
@@ -349,11 +800,13 @@ class Pipe:
                 )
                 budget_tokens = None
 
-        # Apply thinking configuration if requested or reasoning effort specified
+        # Calculate max_tokens for thinking if needed
+        max_tokens = body.get("max_tokens", 64_000)
+        thinking_config = None
+
         if thinking_requested or budget_tokens:
             if budget_tokens:
                 # Check combined token limit
-                max_tokens = payload.get("max_tokens", 64_000)
                 combined_tokens = budget_tokens + max_tokens
 
                 if combined_tokens > MAX_COMBINED_TOKENS:
@@ -361,30 +814,216 @@ class Pipe:
                     self.log(error_msg, "error")
                     if __event_emitter__:
                         await emit_status(error_msg, __event_emitter__, "error")
-                    return error_msg
+                    yield error_msg
+                    return
 
-                payload["max_tokens"] = combined_tokens
-                payload["thinking"] = {
+                max_tokens = combined_tokens
+                thinking_config = {
                     "type": "enabled",
                     "budget_tokens": budget_tokens,
                 }
-                # Thinking requires temperature 1.0 and doesn't support top_p, top_k
-                payload["temperature"] = 1.0
-                if "top_k" in payload:
-                    del payload["top_k"]
-                if "top_p" in payload:
-                    del payload["top_p"]
             else:
                 # Default thinking for -thinking models
-                payload["thinking"] = {
+                thinking_config = {
                     "type": "enabled",
                     "budget_tokens": 32_000,
                 }
 
+        # Determine if we're streaming
+        is_streaming = body.get("stream", False)
+
+        # Tool calling loop - like the inspiration module
+        while True:
+            if __event_emitter__:
+                await emit_status(
+                    "Generating response...", __event_emitter__, "in_progress"
+                )
+
+            # Call the model using query_openai_sdk
+            result = await self.query_openai_sdk(
+                model=model,
+                messages=body["messages"],
+                system_message=system_str,
+                max_tokens=max_tokens,
+                temperature=(
+                    body.get("temperature", 0.7) if not thinking_config else 1.0
+                ),
+                top_p=body.get("top_p") if not thinking_config else None,
+                stop=body.get("stop", []),
+                tools=body.get("tools"),
+                tool_choice=body.get("tool_choice"),
+                stream=is_streaming,
+                thinking_config=thinking_config,
+            )
+
+            # Handle streaming response
+            if is_streaming:
+                tool_calls_made: list[dict[str, Any]] = []
+                message_content = ""
+
+                # Process streaming chunks
+                async for chunk in result:  # type: ignore
+                    if chunk.get("type") == "content":
+                        message_content += chunk["content"]
+                        yield chunk["content"]
+                    elif chunk.get("type") == "tool_calls":
+                        tool_calls_made = chunk["tool_calls"]
+            else:
+                # Non-streaming: result is already a complete string or JSON
+                result_str = str(result)
+
+                # Check if it's a tool call response
+                try:
+                    result_json = json.loads(result_str)
+                    if "tool_calls" in result_json:
+                        tool_calls_made = result_json["tool_calls"]
+                        message_content = ""
+                    else:
+                        tool_calls_made = []
+                        message_content = result_str
+                        yield result_str
+                except json.JSONDecodeError:
+                    # Not JSON, just regular text
+                    tool_calls_made = []
+                    message_content = result_str
+                    yield result_str
+
+            # Add assistant message to body
+            if message_content:
+                body["messages"].append(
+                    {
+                        "role": "assistant",
+                        "content": message_content,
+                    }
+                )
+
+            # If no tool calls, we're done
+            if not tool_calls_made:
+                if __event_emitter__:
+                    await emit_status("Done", __event_emitter__, "complete")
+                break
+
+            # If tools were requested but not provided, error
+            if not __tools__:
+                error_msg = "Tool calls requested but no tools provided"
+                self.log(error_msg, "error")
+                yield f"\n\nError: {error_msg}"
+                break
+
+            # Add tool calls to messages
+            body["messages"].append(
+                {
+                    "role": "assistant",
+                    "tool_calls": tool_calls_made,
+                }
+            )
+
+            # Execute tools
+            if __event_emitter__:
+                await emit_status(
+                    "Executing tools...", __event_emitter__, "in_progress"
+                )
+
+            tool_results = []
+            for tool_call in tool_calls_made:
+                result = await self.execute_tool(
+                    tool_call, __tools__, __event_emitter__
+                )
+                tool_results.append(result)
+
+                # Yield tool execution results for display
+                if result["error"]:
+                    yield f'\n\n<details><summary>Error executing {tool_call["function"]["name"]}</summary>\n{result["error"]}\n</details>\n\n'
+                else:
+                    yield f'\n\n<details><summary>Executed {tool_call["function"]["name"]}</summary>\nResult: {result["result"]}\n</details>\n\n'
+
+            # Add tool results to messages
+            for result in tool_results:
+                body["messages"].append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": result["tool_call"]["id"],
+                        "content": (
+                            result["error"] if result["error"] else result["result"]
+                        ),
+                    }
+                )
+
+            if __event_emitter__:
+                await emit_status(
+                    "Tool execution complete", __event_emitter__, "complete"
+                )
+
+        return
+
+    async def _pipe_with_requests(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        system_message: Optional[str],
+        max_tokens: int,
+        temperature: float,
+        top_p: Optional[float],
+        top_k: Optional[int],
+        stop: list[str],
+        tools: Optional[list[dict[str, Any]]],
+        tool_choice: Optional[dict[str, Any]],
+        stream: bool,
+        thinking_config: Optional[dict[str, Any]],
+    ) -> Union[str, Generator[str, None, None]]:
+        """Handle request using requests library (legacy implementation)."""
         headers = self._build_headers()
 
+        # Process messages for Anthropic format
+        processed_messages = self._process_messages(messages)
+
+        # Build Anthropic API payload
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": processed_messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "stream": stream,
+        }
+
+        # Add system message if present
+        if system_message:
+            payload["system"] = system_message
+
+        # Add optional parameters
+        if top_p is not None:
+            payload["top_p"] = top_p
+        if top_k is not None:
+            payload["top_k"] = top_k
+        if stop:
+            payload["stop_sequences"] = stop
+
+        # Convert tools from OpenAI format to Anthropic format if needed
+        if tools:
+            converted_tools = []
+            for tool in tools:
+                if isinstance(tool, dict) and tool.get("type") == "function":
+                    func = tool.get("function", {})
+                    converted_tools.append(
+                        {
+                            "name": func.get("name"),
+                            "description": func.get("description", ""),
+                            "input_schema": func.get("parameters", {}),
+                        }
+                    )
+                else:
+                    converted_tools.append(tool)
+            payload["tools"] = converted_tools
+
+            if tool_choice:
+                payload["tool_choice"] = tool_choice
+
+        # Add thinking configuration if present
+        if thinking_config:
+            payload["thinking"] = thinking_config
+
         # Handle streaming vs non-streaming
-        if body.get("stream", False):
+        if stream:
             return self._stream_response(self.url, headers, payload)
         else:
             try:
@@ -392,11 +1031,41 @@ class Pipe:
                 if not data:
                     return "Error: Empty response"
 
-                # Extract text from response
-                for block in data.get("content", []):
-                    if block.get("type") == "text":
-                        return block.get("text", "")
-                return ""
+                content_blocks = data.get("content", [])
+
+                # Handle tool calls
+                tool_use_blocks = [
+                    b for b in content_blocks if b.get("type") == "tool_use"
+                ]
+                if tool_use_blocks:
+                    tool_calls = [
+                        {
+                            "id": block["id"],
+                            "type": "function",
+                            "function": {
+                                "name": block["name"],
+                                "arguments": json.dumps(block["input"]),
+                            },
+                        }
+                        for block in tool_use_blocks
+                    ]
+                    return json.dumps({"tool_calls": tool_calls})
+
+                # Handle thinking blocks
+                thinking_blocks = [
+                    b for b in content_blocks if b.get("type") == "thinking"
+                ]
+                thinking_text = ""
+                if thinking_blocks and thinking_config:
+                    thinking_text = (
+                        f"<think>{thinking_blocks[0].get('thinking', '')}</think>\n\n"
+                    )
+
+                # Extract regular text
+                text_blocks = [b for b in content_blocks if b.get("type") == "text"]
+                response_text = text_blocks[0].get("text", "") if text_blocks else ""
+
+                return thinking_text + response_text
 
             except Exception as e:
                 self.log(f"Request failed: {e}", "error")
@@ -415,6 +1084,8 @@ class Pipe:
                     return
 
                 is_thinking = False
+                tool_use_buffer = None
+
                 for raw_line in resp.iter_lines():
                     if not raw_line:
                         continue
@@ -439,6 +1110,14 @@ class Pipe:
                         elif block_type == "text":
                             is_thinking = False
                             yield block.get("text", "")
+                        elif block_type == "tool_use":
+                            # Initialize tool use tracking
+                            tool_use_buffer = {
+                                "id": block.get("id"),
+                                "name": block.get("name"),
+                                "input": "",
+                            }
+
                     elif event_type == "content_block_delta":
                         delta = event.get("delta", {})
                         delta_type = delta.get("type")
@@ -452,10 +1131,33 @@ class Pipe:
                         elif not is_thinking and delta_type == "text_delta":
                             # Stream regular text tokens
                             yield delta.get("text", "")
+                        elif delta_type == "input_json_delta":
+                            # Accumulate tool input
+                            if tool_use_buffer:
+                                tool_use_buffer["input"] += delta.get(
+                                    "partial_json", ""
+                                )
+
                     elif event_type == "content_block_stop":
                         if is_thinking:
                             yield "</think>"
                             is_thinking = False
+                        elif tool_use_buffer:
+                            # Emit complete tool call
+                            try:
+                                tool_call = {
+                                    "id": tool_use_buffer["id"],
+                                    "type": "function",
+                                    "function": {
+                                        "name": tool_use_buffer["name"],
+                                        "arguments": tool_use_buffer["input"],
+                                    },
+                                }
+                                yield json.dumps({"tool_calls": [tool_call]})
+                                tool_use_buffer = None
+                            except Exception as e:
+                                self.log(f"Error processing tool call: {e}", "error")
+
                     elif event_type == "message_stop":
                         break
 
