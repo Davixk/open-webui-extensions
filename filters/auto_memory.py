@@ -14,6 +14,7 @@ license: see extension documentation file `auto_memory.md` (License section) for
 import asyncio
 import json
 import logging
+import threading
 from datetime import datetime
 from typing import (
     Any,
@@ -543,6 +544,21 @@ def searchresult_to_memories(result: SearchResult) -> list[Memory]:
     return memories
 
 
+def _run_detached(coro):
+    """Helper to run coroutine in detached thread"""
+
+    def _runner():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
+    thread = threading.Thread(target=_runner, daemon=True)
+    thread.start()
+
+
 R = TypeVar("R", bound=BaseModel)
 
 
@@ -796,7 +812,6 @@ class Filter:
         messages: list[dict[str, Any]],
         user: UserModel,
     ) -> list[Memory]:
-        # Extract latest user message for finding related memories
         latest_user_msg = None
         for msg in reversed(messages):
             if msg.get("role") == "user":
@@ -864,7 +879,6 @@ class Filter:
             )
             self.log(f"action plan: {action_plan}", level="debug")
 
-            # Apply the actions
             await self.apply_memory_actions(
                 action_plan=action_plan, user=user, emitter=emitter
             )
@@ -1008,7 +1022,7 @@ class Filter:
             self.log("component was disabled by user, skipping", level="info")
             return body
 
-        asyncio.create_task(
+        _run_detached(
             self.auto_memory(
                 body.get("messages", []), user=user, emitter=__event_emitter__
             )
