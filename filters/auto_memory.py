@@ -5,7 +5,7 @@ description: automatically identify and store valuable information from chats as
 author_email: nokodo@nokodo.net
 author_url: https://nokodo.net
 repository_url: https://nokodo.net/github/open-webui-extensions
-version: 1.0.0-alpha13
+version: 1.0.0-alpha14
 required_open_webui_version: >= 0.5.0
 funding_url: https://ko-fi.com/nokodo
 license: see extension documentation file `auto_memory.md` (License section) for the licensing terms.
@@ -560,6 +560,7 @@ def _run_detached(coro):
 
 
 R = TypeVar("R", bound=BaseModel)
+ValveType = TypeVar("ValveType", str, int)
 
 
 class Filter:
@@ -633,11 +634,16 @@ class Filter:
 
     def messages_to_string(self, messages: list[dict[str, Any]]) -> str:
         stringified_messages: list[str] = []
-        effective_messages_to_consider = (
-            self.user_valves.messages_to_consider
-            if self.user_valves.messages_to_consider is not None
-            else self.valves.messages_to_consider
+
+        effective_messages_to_consider = self.get_restricted_user_valve(
+            user_valve_value=self.user_valves.messages_to_consider,
+            admin_fallback=self.valves.messages_to_consider,
+            authorization_check=bool(
+                self.user_valves.api_key and self.user_valves.api_key.strip()
+            ),
+            valve_name="messages_to_consider",
         )
+
         self.log(
             f"using last {effective_messages_to_consider} messages",
             level="debug",
@@ -770,11 +776,11 @@ class Filter:
 
     def get_restricted_user_valve(
         self,
-        user_valve_value: Optional[str],
-        admin_fallback: str,
+        user_valve_value: Optional[ValveType],
+        admin_fallback: ValveType,
         authorization_check: Optional[bool] = None,
         valve_name: Optional[str] = None,
-    ) -> str:
+    ) -> ValveType:
         """
         Get user valve value with security checks.
 
@@ -795,31 +801,31 @@ class Filter:
             authorization_check = False
 
         if authorization_check:
-            if user_valve_value:
+            if user_valve_value is not None:
                 self.log(
                     f"'{valve_name or 'unknown'}' override authorized (user has own API key)",
                     level="debug",
                 )
-            return user_valve_value or admin_fallback
+            return user_valve_value if user_valve_value is not None else admin_fallback
 
         # Allow admins to override without providing their own API key
         if hasattr(self, "current_user") and self.current_user.get("role") == "admin":
-            if user_valve_value:
+            if user_valve_value is not None:
                 self.log(
                     f"'{valve_name or 'unknown'}' override allowed for admin user",
                     level="info",
                 )
-            return user_valve_value or admin_fallback
+            return user_valve_value if user_valve_value is not None else admin_fallback
 
         if self.valves.allow_unsafe_user_overrides:
-            if user_valve_value:
+            if user_valve_value is not None:
                 self.log(
                     f"'{valve_name or 'unknown'}' override allowed (unsafe overrides enabled)",
                     level="warning",
                 )
-            return user_valve_value or admin_fallback
+            return user_valve_value if user_valve_value is not None else admin_fallback
 
-        if user_valve_value:
+        if user_valve_value is not None:
             self.log(
                 f"'{valve_name or 'unknown'}' override blocked - user attempted override without authorization, using admin defaults for security",
                 level="warning",
