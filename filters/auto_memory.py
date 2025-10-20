@@ -5,7 +5,7 @@ description: automatically identify and store valuable information from chats as
 author_email: nokodo@nokodo.net
 author_url: https://nokodo.net
 repository_url: https://nokodo.net/github/open-webui-extensions
-version: 1.0.0-alpha12
+version: 1.0.0-alpha13
 required_open_webui_version: >= 0.5.0
 funding_url: https://ko-fi.com/nokodo
 license: see extension documentation file `auto_memory.md` (License section) for the licensing terms.
@@ -696,12 +696,14 @@ class Filter:
             user_valve_value=self.user_valves.openai_api_url,
             admin_fallback=self.valves.openai_api_url,
             authorization_check=user_has_own_key,
+            valve_name="openai_api_url",
         ).rstrip("/")
 
         model_name = self.get_restricted_user_valve(
             user_valve_value=self.user_valves.model,
             admin_fallback=self.valves.model,
             authorization_check=user_has_own_key,
+            valve_name="model",
         )
         api_key = self.user_valves.api_key or self.valves.api_key
 
@@ -771,6 +773,7 @@ class Filter:
         user_valve_value: Optional[str],
         admin_fallback: str,
         authorization_check: Optional[bool] = None,
+        valve_name: Optional[str] = None,
     ) -> str:
         """
         Get user valve value with security checks.
@@ -779,10 +782,12 @@ class Filter:
             user_valve_value: The user's valve value to check
             admin_fallback: Admin's fallback value
             authorization_check: The valve value to check for authorization (e.g., user's API key)
+            valve_name: Name of the valve being checked (for logging)
 
         Returns user's value only if:
         1. authorization_check is provided and non-empty, OR
-        2. Admin allows unsafe overrides
+        2. User is an admin, OR
+        3. Admin allows unsafe overrides
 
         Otherwise returns admin fallback.
         """
@@ -790,19 +795,33 @@ class Filter:
             authorization_check = False
 
         if authorization_check:
+            if user_valve_value:
+                self.log(
+                    f"'{valve_name or 'unknown'}' override authorized (user has own API key)",
+                    level="debug",
+                )
+            return user_valve_value or admin_fallback
+
+        # Allow admins to override without providing their own API key
+        if hasattr(self, "current_user") and self.current_user.get("role") == "admin":
+            if user_valve_value:
+                self.log(
+                    f"'{valve_name or 'unknown'}' override allowed for admin user",
+                    level="info",
+                )
             return user_valve_value or admin_fallback
 
         if self.valves.allow_unsafe_user_overrides:
             if user_valve_value:
                 self.log(
-                    "unsafe overrides enabled - allowing user override with admin credentials",
+                    f"'{valve_name or 'unknown'}' override allowed (unsafe overrides enabled)",
                     level="warning",
                 )
             return user_valve_value or admin_fallback
 
         if user_valve_value:
             self.log(
-                "user attempted override without authorization - using admin defaults for security",
+                f"'{valve_name or 'unknown'}' override blocked - user attempted override without authorization, using admin defaults for security",
                 level="warning",
             )
         return admin_fallback
@@ -1005,6 +1024,7 @@ class Filter:
         user = Users.get_user_by_id(__user__["id"])
         if user is None:
             raise ValueError("user not found")
+        self.current_user = __user__
 
         self.log(f"input user type = {type(__user__)}", level="debug")
         self.log(
