@@ -2,7 +2,7 @@
 title: Auto Anthropic
 author: @nokodo
 description: clean, plug and play Claude manifold pipeline with support for all the latest features from Anthropic
-version: 0.1.0-alpha7
+version: 0.1.0-alpha8
 required_open_webui_version: ">= 0.5.0"
 license: see extension documentation file `auto_claude.md` (License section) for the licensing terms.
 repository_url: https://nokodo.net/github/open-webui-extensions
@@ -697,7 +697,7 @@ class Pipe:
 
                 if delta.content:
                     collected_content += delta.content
-                    if first_iteration_after_tool_call:
+                    if first_iteration_after_tool_call and not first_iteration:
                         first_iteration_after_tool_call = False
                         yield "\n\n---\n\n"
                     if first_iteration:
