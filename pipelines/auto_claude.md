@@ -45,10 +45,10 @@ You get:
 
 Configure via the Open WebUI extension settings:
 
-| Setting             | Description                     | Default                        |
-| ------------------- | ------------------------------- | ------------------------------ |
-| `ANTHROPIC_API_KEY` | Your Anthropic API key          | _(from environment variable)_  |
-| `debug_mode`        | Enable detailed logging         | `false`                        |
+| Setting             | Description             | Default                       |
+| ------------------- | ----------------------- | ----------------------------- |
+| `ANTHROPIC_API_KEY` | Your Anthropic API key  | _(from environment variable)_ |
+| `debug_mode`        | Enable detailed logging | `false`                       |
 
 ---
 
@@ -57,6 +57,7 @@ Configure via the Open WebUI extension settings:
 All models are available in both standard and extended thinking variants:
 
 ### Claude Sonnet 4.5
+
 - **Standard**: `claude-sonnet-4-5-20250929`
 - **Thinking**: `claude-sonnet-4-5-20250929-thinking`
 - **Context**: 200K tokens
@@ -64,6 +65,7 @@ All models are available in both standard and extended thinking variants:
 - **Multimodal**: ✅ Vision & PDF support
 
 ### Claude Opus 4.1
+
 - **Standard**: `claude-opus-4-1-20250805`
 - **Thinking**: `claude-opus-4-1-20250805-thinking`
 - **Context**: 200K tokens
@@ -71,6 +73,7 @@ All models are available in both standard and extended thinking variants:
 - **Multimodal**: ✅ Vision & PDF support
 
 ### Claude Haiku 4.5
+
 - **Standard**: `claude-haiku-4-5-20251001`
 - **Thinking**: `claude-haiku-4-5-20251001-thinking`
 - **Context**: 200K tokens
@@ -78,6 +81,7 @@ All models are available in both standard and extended thinking variants:
 - **Multimodal**: ✅ Vision & PDF support
 
 ### Latest Variants
+
 - `claude-sonnet-4-latest` / `claude-sonnet-4-latest-thinking`
 - `claude-opus-4-latest` / `claude-opus-4-latest-thinking`
 - `claude-sonnet-4-20250514` / `claude-sonnet-4-20250514-thinking`
@@ -91,13 +95,13 @@ Enable Claude's reasoning capabilities by using `-thinking` model variants or se
 
 ### Reasoning Effort Levels
 
-| Level    | Budget Tokens | Use Case                           |
-| -------- | ------------- | ---------------------------------- |
-| `none`   | 0             | Standard responses (no thinking)   |
-| `low`    | 4,000         | Quick reasoning tasks              |
-| `medium` | 16,000        | Moderate complexity problems       |
-| `high`   | 32,000        | Complex reasoning and analysis     |
-| `max`    | 48,000        | Most difficult reasoning tasks     |
+| Level    | Budget Tokens | Use Case                         |
+| -------- | ------------- | -------------------------------- |
+| `none`   | 0             | Standard responses (no thinking) |
+| `low`    | 4,000         | Quick reasoning tasks            |
+| `medium` | 16,000        | Moderate complexity problems     |
+| `high`   | 32,000        | Complex reasoning and analysis   |
+| `max`    | 48,000        | Most difficult reasoning tasks   |
 
 You can also specify custom budget tokens as an integer value.
 
@@ -119,11 +123,13 @@ You can also specify custom budget tokens as an integer value.
 ## 🖼️ Multimodal Support
 
 ### Images
+
 - **Supported formats**: JPEG, PNG, GIF, WebP
 - **Max size**: 5 MB
 - **Methods**: Base64 data URIs or direct URLs
 
 ### PDFs
+
 - **Max size**: 32 MB
 - **Methods**: Base64 data URIs or direct URLs
 
@@ -148,16 +154,20 @@ The pipeline handles both streaming and non-streaming tool calls seamlessly.
 ## 🔧 Advanced Features
 
 ### Dual SDK Support
+
 - **Anthropic SDK**: Native support for Anthropic's message format and features
 - **OpenAI SDK**: Compatible with OpenAI-style requests for easier migration
 
 ### Smart Message Processing
+
 - Automatically converts between message formats
 - Handles tool results and tool use blocks
 - Preserves conversation context across tool calls
 
 ### Status Emissions
+
 Real-time status updates for:
+
 - Thinking progress (start/duration)
 - Tool execution
 - Response streaming
