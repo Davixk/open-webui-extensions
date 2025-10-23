@@ -5,7 +5,7 @@ description: automatically identify and store valuable information from chats as
 author_email: nokodo@nokodo.net
 author_url: https://nokodo.net
 repository_url: https://nokodo.net/github/open-webui-extensions
-version: 1.0.0-alpha15
+version: 1.0.0-alpha16
 required_open_webui_version: >= 0.5.0
 funding_url: https://ko-fi.com/nokodo
 license: see extension documentation file `auto_memory.md` (License section) for the licensing terms.
@@ -397,27 +397,22 @@ Output:
 
 async def emit_status(
     description: str,
-    emitter: Callable[[Any], Awaitable[None]],
+    emitter: Any,
     status: Literal["in_progress", "complete", "error"] = "complete",
-    done: Optional[bool] = None,
+    extra_data: Optional[dict] = None,
 ):
-    """Emit a status event with sensible defaults.
-
-    Defaults:
-    - status defaults to "complete"
-    - done defaults to True unless status == "in_progress" (then False)
-    """
     if not emitter:
-        raise ValueError("emitter is required")
-    if done is None:
-        done = status != "in_progress"
+        raise ValueError("Emitter is required to emit status updates")
+
     await emitter(
         {
             "type": "status",
             "data": {
                 "description": description,
                 "status": status,
-                "done": done,
+                "done": status in ("complete", "error"),
+                "error": status == "error",
+                **(extra_data or {}),
             },
         }
     )

@@ -6,7 +6,7 @@ author_email: nokodo@nokodo.net
 author_url: https://nokodo.net
 funding_url: https://ko-fi.com/nokodo
 repository_url: https://nokodo.net/github/open-webui-extensions
-version: 0.1.0
+version: 0.2.0
 required_open_webui_version: >= 0.6.0
 requirements: aiohttp
 license: MIT
@@ -20,6 +20,33 @@ from open_webui.main import Request, app
 from open_webui.models.users import UserModel, Users
 from open_webui.routers.retrieval import SearchForm, process_web_search
 from pydantic import BaseModel, Field
+
+
+async def emit_status(
+    description: str,
+    emitter: Any,
+    status: Literal["in_progress", "complete", "error"] = "complete",
+    extra_data: Optional[dict] = None,
+):
+    if not emitter:
+        raise ValueError("Emitter is required to emit status updates")
+
+    await emitter(
+        {
+            "type": "status",
+            "data": {
+                "description": description,
+                "status": status,
+                "done": status in ("complete", "error"),
+                "error": status == "error",
+                **(extra_data or {}),
+            },
+        }
+    )
+
+
+async def get_request() -> Request:
+    return Request(scope={"type": "http", "app": app})
 
 
 class Tools:
@@ -60,11 +87,11 @@ class Tools:
                         "properties": {
                             "search_queries": {
                                 "type": "array",
-                                "description": "An array of search query strings. Each is a clear, focused search term or question.",
+                                "description": "An array of search query strings.",
                                 "items": {
                                     "type": "string",
                                     "title": "Search Query",
-                                    "description": "A clear, focused search term or question.",
+                                    "description": "A search query can be anything from a simple search term to a complex question.",
                                 },
                                 "minItems": 1,
                                 "maxItems": 5,
@@ -115,7 +142,9 @@ async def native_web_search(
     """Search using the native search engine."""
     try:
         await emit_status(
-            f"searching the web for: {', '.join(search_queries[:3])}",
+            "searching the web",
+            extra_data={"queries": search_queries},
+            status="in_progress",
             emitter=emitter,
         )
 
@@ -124,8 +153,8 @@ async def native_web_search(
             request=await get_request(), form_data=form, user=user
         )
 
-        items = cast(list[dict[str, Any]], result["docs"])  # type: ignore[index]
-        item_count = cast(int, result["loaded_count"])  # type: ignore[index]
+        items = cast(list[dict[str, Any]], result["docs"])
+        item_count = cast(int, result["loaded_count"])
 
         search_results = cast(
             list[dict[str, str]],
@@ -152,9 +181,9 @@ async def native_web_search(
                 )
 
         await emit_status(
-            f"found {item_count} result(s)",
+            f"found {item_count} result{'s' if item_count != 1 else ''}",
             status="complete",
-            done=True,
+            extra_data={"urls": [sr["source"] for sr in search_results]},
             emitter=emitter,
         )
 
@@ -170,7 +199,6 @@ async def native_web_search(
         await emit_status(
             "encountered an error while searching the web",
             status="error",
-            done=True,
             emitter=emitter,
         )
         return json.dumps(
@@ -218,7 +246,9 @@ async def perplexica_web_search(
     payload = {k: v for k, v in payload.items() if v != "default"}
 
     try:
-        await emit_status("Sending request to Perplexica API", emitter=emitter)
+        await emit_status(
+            "Sending request to Perplexica API", status="in_progress", emitter=emitter
+        )
 
         # Fixed: Use aiohttp instead of requests for proper async handling
         headers = {"Content-Type": "application/json"}
@@ -259,9 +289,8 @@ async def perplexica_web_search(
                 )
 
         await emit_status(
-            "Search completed successfully",
+            "search completed successfully",
             status="complete",
-            done=True,
             emitter=emitter,
         )
 
@@ -275,29 +304,6 @@ async def perplexica_web_search(
         return response_text
 
     except Exception as e:
-        error_msg = f"Error performing search: {str(e)}"
-        await emit_status(error_msg, status="error", done=True, emitter=emitter)
+        error_msg = f"error performing search: {str(e)}"
+        await emit_status(error_msg, status="error", emitter=emitter)
         return error_msg
-
-
-async def emit_status(
-    description: str,
-    emitter: Any,
-    status: str = "in_progress",
-    done: bool = False,
-):
-    if emitter:
-        await emitter(
-            {
-                "type": "status",
-                "data": {
-                    "description": description,
-                    "status": status,
-                    "done": done,
-                },
-            }
-        )
-
-
-async def get_request() -> Request:
-    return Request(scope={"type": "http", "app": app})

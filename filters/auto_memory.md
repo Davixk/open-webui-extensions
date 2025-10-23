@@ -101,7 +101,7 @@ See full logic and more cases in code.
 ```
 title: Auto Memory
 author: nokodo
-version: 1.0.0-alpha15
+version: 1.0.0-alpha16
 required_open_webui_version: >= 0.5.0
 repository_url: https://nokodo.net/github/open-webui-extensions
 funding_url: https://ko-fi.com/nokodo

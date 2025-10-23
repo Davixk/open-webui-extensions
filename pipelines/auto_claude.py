@@ -2,7 +2,7 @@
 title: Auto Anthropic
 author: @nokodo
 description: clean, plug and play Claude manifold pipeline with support for all the latest features from Anthropic
-version: 0.1.0-alpha8
+version: 0.1.0-alpha9
 required_open_webui_version: ">= 0.5.0"
 license: see extension documentation file `auto_claude.md` (License section) for the licensing terms.
 repository_url: https://nokodo.net/github/open-webui-extensions
@@ -33,27 +33,22 @@ LogLevel = Literal["debug", "info", "warning", "error"]
 
 async def emit_status(
     description: str,
-    emitter: Callable[[Any], Awaitable[None]],
+    emitter: Any,
     status: Literal["in_progress", "complete", "error"] = "complete",
-    done: Optional[bool] = None,
+    extra_data: Optional[dict] = None,
 ):
-    """Emit a status event with sensible defaults.
-
-    Defaults:
-    - status defaults to "complete"
-    - done defaults to True unless status == "in_progress" (then False)
-    """
     if not emitter:
-        raise ValueError("emitter is required")
-    if done is None:
-        done = status != "in_progress"
+        raise ValueError("Emitter is required to emit status updates")
+
     await emitter(
         {
             "type": "status",
             "data": {
                 "description": description,
                 "status": status,
-                "done": done,
+                "done": status in ("complete", "error"),
+                "error": status == "error",
+                **(extra_data or {}),
             },
         }
     )
@@ -707,6 +702,9 @@ class Pipe:
 
                 # Collect tool calls as they stream
                 if delta.tool_calls:
+                    if first_iteration:
+                        first_iteration = False
+                        await self.thinking_status("completed", emitter=event_emitter)
                     for tc in delta.tool_calls:
                         while len(collected_tool_calls) <= tc.index:
                             collected_tool_calls.append(

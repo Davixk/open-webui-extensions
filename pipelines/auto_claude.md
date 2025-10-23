@@ -140,7 +140,7 @@ The pipeline handles both streaming and non-streaming tool calls seamlessly.
 ```
 title: Auto Anthropic
 author: nokodo
-version: 0.1.0-alpha8
+version: 0.1.0-alpha9
 required_open_webui_version: >= 0.5.0
 repository_url: https://nokodo.net/github/open-webui-extensions
 funding_url: https://ko-fi.com/nokodo
