@@ -2,7 +2,7 @@
 title: Auto Anthropic
 author: @nokodo
 description: clean, plug and play Claude manifold pipeline with support for all the latest features from Anthropic
-version: 0.1.0-alpha6
+version: 0.1.0-alpha7
 required_open_webui_version: ">= 0.5.0"
 license: see extension documentation file `auto_claude.md` (License section) for the licensing terms.
 repository_url: https://nokodo.net/github/open-webui-extensions
@@ -29,9 +29,6 @@ from openai import OpenAI
 from pydantic import BaseModel, Field
 
 LogLevel = Literal["debug", "info", "warning", "error"]
-
-LOG_FORMAT = "[Auto Claude][{level}] {message}"
-LOGGER_NAME = "open_webui.extensions.auto_claude"
 
 
 async def emit_status(
@@ -323,10 +320,8 @@ class Pipe:
         if level not in {"debug", "info", "warning", "error"}:
             level = "info"
 
-        logger = logging.getLogger(LOGGER_NAME)
+        logger = logging.getLogger()
         getattr(logger, level, logger.info)(message)
-
-        print(LOG_FORMAT.format(level=level, message=message))
 
     def get_anthropic_models(self) -> list[dict[str, Any]]:
         """Return available Claude models with thinking variants."""

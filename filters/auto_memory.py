@@ -5,7 +5,7 @@ description: automatically identify and store valuable information from chats as
 author_email: nokodo@nokodo.net
 author_url: https://nokodo.net
 repository_url: https://nokodo.net/github/open-webui-extensions
-version: 1.0.0-alpha14
+version: 1.0.0-alpha15
 required_open_webui_version: >= 0.5.0
 funding_url: https://ko-fi.com/nokodo
 license: see extension documentation file `auto_memory.md` (License section) for the licensing terms.
@@ -395,10 +395,6 @@ Output:
 """
 
 
-LOG_FORMAT = "[Auto Memory][{level}] {message}"
-LOGGER_NAME = "open_webui.extensions.auto_memory"
-
-
 async def emit_status(
     description: str,
     emitter: Callable[[Any], Awaitable[None]],
@@ -627,10 +623,8 @@ class Filter:
         if level not in {"debug", "info", "warning", "error"}:
             level = "info"
 
-        logger = logging.getLogger(LOGGER_NAME)
+        logger = logging.getLogger()
         getattr(logger, level, logger.info)(message)
-
-        print(LOG_FORMAT.format(level=level, message=message))
 
     def messages_to_string(self, messages: list[dict[str, Any]]) -> str:
         stringified_messages: list[str] = []

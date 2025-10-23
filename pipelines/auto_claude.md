@@ -54,38 +54,7 @@ Configure via the Open WebUI extension settings:
 
 ## 🤖 Available Models
 
-All models are available in both standard and extended thinking variants:
-
-### Claude Sonnet 4.5
-
-- **Standard**: `claude-sonnet-4-5-20250929`
-- **Thinking**: `claude-sonnet-4-5-20250929-thinking`
-- **Context**: 200K tokens
-- **Max Output**: 64K tokens
-- **Multimodal**: ✅ Vision & PDF support
-
-### Claude Opus 4.1
-
-- **Standard**: `claude-opus-4-1-20250805`
-- **Thinking**: `claude-opus-4-1-20250805-thinking`
-- **Context**: 200K tokens
-- **Max Output**: 64K tokens
-- **Multimodal**: ✅ Vision & PDF support
-
-### Claude Haiku 4.5
-
-- **Standard**: `claude-haiku-4-5-20251001`
-- **Thinking**: `claude-haiku-4-5-20251001-thinking`
-- **Context**: 200K tokens
-- **Max Output**: 64K tokens
-- **Multimodal**: ✅ Vision & PDF support
-
-### Latest Variants
-
-- `claude-sonnet-4-latest` / `claude-sonnet-4-latest-thinking`
-- `claude-opus-4-latest` / `claude-opus-4-latest-thinking`
-- `claude-sonnet-4-20250514` / `claude-sonnet-4-20250514-thinking`
-- `claude-opus-4-20250514` / `claude-opus-4-20250514-thinking`
+All models released after Claude Sonnet 4 are available in both standard and extended thinking variants.
 
 ---
 
@@ -164,14 +133,6 @@ The pipeline handles both streaming and non-streaming tool calls seamlessly.
 - Handles tool results and tool use blocks
 - Preserves conversation context across tool calls
 
-### Status Emissions
-
-Real-time status updates for:
-
-- Thinking progress (start/duration)
-- Tool execution
-- Response streaming
-
 ---
 
 ## 🧰 Extension Metadata
@@ -179,7 +140,7 @@ Real-time status updates for:
 ```
 title: Auto Anthropic
 author: nokodo
-version: 0.1.0-alpha6
+version: 0.1.0-alpha7
 required_open_webui_version: >= 0.5.0
 repository_url: https://nokodo.net/github/open-webui-extensions
 funding_url: https://ko-fi.com/nokodo
