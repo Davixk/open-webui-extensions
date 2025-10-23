@@ -9,7 +9,7 @@ repository_url: https://nokodo.net/github/open-webui-extensions
 version: 0.2.0
 required_open_webui_version: >= 0.6.0
 requirements: aiohttp
-license: MIT
+license: see extension documentation file `auto_web_search.md` (License section) for the licensing terms.
 """
 
 import json
