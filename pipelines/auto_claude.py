@@ -2,7 +2,7 @@
 title: Auto Anthropic
 author: @nokodo
 description: clean, plug and play Claude manifold pipeline with support for all the latest features from Anthropic
-version: 0.1.0-alpha9
+version: 0.1.0-alpha10
 required_open_webui_version: ">= 0.5.0"
 license: see extension documentation file `auto_claude.md` (License section) for the licensing terms.
 repository_url: https://nokodo.net/github/open-webui-extensions
@@ -284,6 +284,10 @@ class Pipe:
         ANTHROPIC_API_KEY: str = Field(
             default=os.getenv("ANTHROPIC_API_KEY", ""),
             description="Anthropic API key",
+        )
+        ttft_as_thinking: bool = Field(
+            default=False,
+            description="show 'thinking...' status while waiting for first token (entertaining loading indicator)",
         )
         debug_mode: bool = Field(
             default=False,
@@ -639,7 +643,8 @@ class Pipe:
                 extra_body=extra_body if extra_body else None,
             )
 
-            await self.thinking_status("completed", emitter=event_emitter)
+            if self.valves.ttft_as_thinking:
+                await self.thinking_status("completed", emitter=event_emitter)
             return response.choices[0].message.content
 
     async def _openai_sdk_stream_handler(
@@ -659,7 +664,8 @@ class Pipe:
     ) -> AsyncIterator:
         """Stream responses with automatic tool calling loop."""
 
-        first_iteration = True
+        first_output = True
+        first_iteration_with_text = True
         first_iteration_after_tool_call = False
 
         while True:
@@ -692,19 +698,30 @@ class Pipe:
 
                 if delta.content:
                     collected_content += delta.content
-                    if first_iteration_after_tool_call and not first_iteration:
+                    if (
+                        first_iteration_after_tool_call
+                        and not first_iteration_with_text
+                    ):
                         first_iteration_after_tool_call = False
                         yield "\n\n---\n\n"
-                    if first_iteration:
-                        first_iteration = False
-                        await self.thinking_status("completed", emitter=event_emitter)
+                    if first_output:
+                        first_output = False
+                        if self.valves.ttft_as_thinking:
+                            await self.thinking_status(
+                                "completed", emitter=event_emitter
+                            )
+                    if first_iteration_with_text:
+                        first_iteration_with_text = False
                     yield delta.content
 
                 # Collect tool calls as they stream
                 if delta.tool_calls:
-                    if first_iteration:
-                        first_iteration = False
-                        await self.thinking_status("completed", emitter=event_emitter)
+                    if first_output:
+                        first_output = False
+                        if self.valves.ttft_as_thinking:
+                            await self.thinking_status(
+                                "completed", emitter=event_emitter
+                            )
                     for tc in delta.tool_calls:
                         while len(collected_tool_calls) <= tc.index:
                             collected_tool_calls.append(
@@ -861,7 +878,8 @@ class Pipe:
 
         if not __event_emitter__:
             raise RuntimeError("Event emitter is required")
-        await self.thinking_status("started", emitter=__event_emitter__)
+        if self.valves.ttft_as_thinking:
+            await self.thinking_status("started", emitter=__event_emitter__)
 
         # If host is trying to handle tools, opt out and do it ourselves
         if __task__ == "function_calling":
