@@ -6,7 +6,7 @@ author_email: nokodo@nokodo.net
 author_url: https://nokodo.net
 funding_url: https://ko-fi.com/nokodo
 repository_url: https://nokodo.net/github/open-webui-extensions
-version: 0.2.0
+version: 0.2.1
 required_open_webui_version: >= 0.6.0
 requirements: aiohttp
 license: see extension documentation file `auto_web_search.md` (License section) for the licensing terms.
@@ -25,20 +25,34 @@ from pydantic import BaseModel, Field
 async def emit_status(
     description: str,
     emitter: Any,
-    status: Literal["in_progress", "complete", "error"] = "complete",
+    status: Literal[
+        "in_progress", "complete", "error", "web_search", "web_search_queries_generated"
+    ] = "complete",
     extra_data: Optional[dict] = None,
+    done: Optional[bool] = None,
+    error: Optional[bool] = None,
 ):
     if not emitter:
         raise ValueError("Emitter is required to emit status updates")
+    if extra_data is None:
+        extra_data = {}
+
+    if status in ("in_progress", "complete", "error"):
+        extra_data["status"] = status
+    else:
+        extra_data["action"] = status
+    """ if status == "web_search":
+        status_key["action"] = "web_search"
+    else:
+        status_key["status"] = status """
 
     await emitter(
         {
             "type": "status",
             "data": {
                 "description": description,
-                "status": status,
-                "done": status in ("complete", "error"),
-                "error": status == "error",
+                "done": done if done is not None else status in ("complete", "error"),
+                "error": error if error is not None else status == "error",
                 **(extra_data or {}),
             },
         }
@@ -144,7 +158,8 @@ async def native_web_search(
         await emit_status(
             "searching the web",
             extra_data={"queries": search_queries},
-            status="in_progress",
+            status="web_search_queries_generated",
+            done=False,
             emitter=emitter,
         )
 
@@ -181,8 +196,9 @@ async def native_web_search(
                 )
 
         await emit_status(
-            f"found {item_count} result{'s' if item_count != 1 else ''}",
-            status="complete",
+            f"searched {item_count} website{'s' if item_count != 1 else ''}",
+            status="web_search",
+            done=True,
             extra_data={"urls": [sr["source"] for sr in search_results]},
             emitter=emitter,
         )
@@ -198,13 +214,14 @@ async def native_web_search(
     except Exception as e:
         await emit_status(
             "encountered an error while searching the web",
-            status="error",
+            status="web_search",
+            done=True,
+            error=True,
             emitter=emitter,
         )
         return json.dumps(
             {
                 "status": "web search failed",
-                "results": [],
                 "error": str(e),
             }
         )
