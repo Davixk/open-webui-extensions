@@ -2,7 +2,7 @@
 title: Auto Anthropic
 author: @nokodo
 description: clean, plug and play Claude manifold pipeline with support for all the latest features from Anthropic
-version: 0.1.0-alpha11
+version: 0.1.0-alpha12
 required_open_webui_version: ">= 0.5.0"
 license: see extension documentation file `auto_claude.md` (License section) for the licensing terms.
 repository_url: https://nokodo.net/github/open-webui-extensions
@@ -24,7 +24,6 @@ from typing import (
 )
 
 import requests
-from anthropic import Anthropic
 from openai import OpenAI
 from pydantic import BaseModel, Field
 
@@ -81,200 +80,6 @@ MAX_IMAGE_SIZE = 5 * 1024 * 1024  # 5 MB
 MAX_PDF_SIZE = 32 * 1024 * 1024  # 32 MB
 RETRY_STATUS_CODES = {429, 500, 502, 503, 504}
 MAX_RETRIES = 5
-
-
-async def query_anthropic_sdk(
-    api_key: str,
-    model: str,
-    messages: list[dict[str, Any]],
-    system_message: Optional[str],
-    max_tokens: int,
-    temperature: float,
-    top_p: Optional[float],
-    stop: Optional[list[str]],
-    tools: Optional[list[dict[str, Any]]],
-    tool_choice: Optional[dict[str, Any]],
-    stream: bool,
-    thinking_config: Optional[dict[str, Any]],
-) -> Union[str, AsyncIterator[dict[str, Any]]]:
-    """Query Anthropic SDK with native support for both streaming and non-streaming.
-
-    This is a standalone function that uses the official Anthropic Python SDK.
-    Tool calls work properly with both streaming and non-streaming modes.
-
-    Args:
-        api_key: Anthropic API key
-        model: Model name (e.g., "claude-sonnet-4-5-20250929")
-        messages: List of message dicts with role and content
-        system_message: Optional system prompt
-        max_tokens: Maximum tokens to generate
-        temperature: Sampling temperature
-        top_p: Nucleus sampling parameter
-        stop: Stop sequences
-        tools: List of tool definitions in OpenAI format (will be converted)
-        tool_choice: Tool choice configuration
-        stream: Whether to stream responses
-        thinking_config: Extended thinking configuration
-
-    Returns:
-        If stream=False: Complete response as string, or JSON string with tool_calls
-        If stream=True: AsyncIterator yielding dicts with {"type": "content"|"tool_calls", ...}
-    """
-    client = Anthropic(api_key=api_key)
-
-    # Convert tools from OpenAI format to Anthropic format if provided
-    anthropic_tools = None
-    if tools:
-        anthropic_tools = []
-        for tool in tools:
-            if isinstance(tool, dict) and tool.get("type") == "function":
-                func = tool.get("function", {})
-                anthropic_tools.append(
-                    {
-                        "name": func.get("name"),
-                        "description": func.get("description", ""),
-                        "input_schema": func.get("parameters", {}),
-                    }
-                )
-            else:
-                # Already in Anthropic format
-                anthropic_tools.append(tool)
-
-    # Build extra kwargs for thinking
-    extra_kwargs = {}
-    if thinking_config:
-        extra_kwargs["thinking"] = thinking_config
-
-    if stream:
-        # Return async iterator for streaming
-        return _stream_anthropic_sdk(
-            client=client,
-            model=model,
-            messages=messages,
-            system_message=system_message,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            stop=stop,
-            tools=anthropic_tools,
-            tool_choice=tool_choice,
-            extra_kwargs=extra_kwargs,
-        )
-    else:
-        # Non-streaming: call API and return result
-        try:
-            # Build kwargs dynamically to avoid None values
-            kwargs: dict[str, Any] = {
-                "model": model,
-                "messages": messages,  # type: ignore
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-            }
-
-            if system_message:
-                kwargs["system"] = system_message
-            if top_p is not None:
-                kwargs["top_p"] = top_p
-            if stop:
-                kwargs["stop_sequences"] = stop
-            if anthropic_tools:
-                kwargs["tools"] = anthropic_tools  # type: ignore
-            if tool_choice:
-                kwargs["tool_choice"] = tool_choice  # type: ignore
-
-            kwargs.update(extra_kwargs)
-
-            response = client.messages.create(**kwargs)
-
-            # Check for tool use
-            tool_use_blocks = [
-                block for block in response.content if block.type == "tool_use"
-            ]
-
-            if tool_use_blocks:
-                # Return tool calls as JSON
-                tool_calls = [
-                    {
-                        "id": block.id,
-                        "type": "function",
-                        "function": {
-                            "name": block.name,
-                            "arguments": json.dumps(block.input),
-                        },
-                    }
-                    for block in tool_use_blocks
-                ]
-                return json.dumps({"tool_calls": tool_calls})
-
-            # Return text content
-            text_blocks = [block for block in response.content if block.type == "text"]
-            return text_blocks[0].text if text_blocks else ""
-
-        except Exception as e:
-            return f"Error: {e}"
-
-
-async def _stream_anthropic_sdk(
-    client: Anthropic,
-    model: str,
-    messages: list[dict[str, Any]],
-    system_message: Optional[str],
-    max_tokens: int,
-    temperature: float,
-    top_p: Optional[float],
-    stop: Optional[list[str]],
-    tools: Optional[list[dict[str, Any]]],
-    tool_choice: Optional[dict[str, Any]],
-    extra_kwargs: dict[str, Any],
-) -> AsyncIterator[dict[str, Any]]:
-    """Stream response from Anthropic SDK and yield content chunks and tool calls."""
-    try:
-        # Build kwargs dynamically
-        kwargs: dict[str, Any] = {
-            "model": model,
-            "messages": messages,  # type: ignore
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-        }
-
-        if system_message:
-            kwargs["system"] = system_message
-        if top_p is not None:
-            kwargs["top_p"] = top_p
-        if stop:
-            kwargs["stop_sequences"] = stop
-        if tools:
-            kwargs["tools"] = tools  # type: ignore
-        if tool_choice:
-            kwargs["tool_choice"] = tool_choice  # type: ignore
-
-        kwargs.update(extra_kwargs)
-
-        with client.messages.stream(**kwargs) as stream:
-            for event in stream:
-                # Yield text content as it streams
-                if event.type == "content_block_delta":
-                    delta = event.delta
-                    # Check if delta has text attribute (TextDelta)
-                    if hasattr(delta, "text") and delta.text:  # type: ignore
-                        yield {"type": "content", "content": delta.text}  # type: ignore
-
-                # Collect tool use when complete
-                elif event.type == "content_block_stop":
-                    content_block = event.content_block  # type: ignore
-                    if hasattr(content_block, "type") and content_block.type == "tool_use":  # type: ignore
-                        tool_call = {
-                            "id": content_block.id,  # type: ignore
-                            "type": "function",
-                            "function": {
-                                "name": content_block.name,  # type: ignore
-                                "arguments": json.dumps(content_block.input),  # type: ignore
-                            },
-                        }
-                        yield {"type": "tool_calls", "tool_calls": [tool_call]}
-
-    except Exception as e:
-        yield {"type": "error", "error": str(e)}
 
 
 class Pipe:
@@ -503,39 +308,6 @@ class Pipe:
                 "source": {"type": "url", "url": url},
             }
 
-    async def anthropic_sdk_wrapper(
-        self,
-        model: str,
-        messages: list[dict[str, Any]],
-        system_message: Optional[str],
-        max_tokens: int,
-        temperature: float,
-        top_p: Optional[float],
-        stop: Optional[list[str]],
-        tools: Optional[list[dict[str, Any]]],
-        tool_choice: Optional[dict[str, Any]],
-        stream: bool,
-        thinking_config: Optional[dict[str, Any]],
-    ) -> Union[str, AsyncIterator[dict[str, Any]]]:
-        """Wrapper method that injects API key and calls the standalone Anthropic SDK function.
-
-        This is a thin wrapper around query_anthropic_sdk() that provides the API key from valves.
-        """
-        return await query_anthropic_sdk(
-            api_key=self.valves.ANTHROPIC_API_KEY,
-            model=model,
-            messages=messages,
-            system_message=system_message,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            stop=stop,
-            tools=tools,
-            tool_choice=tool_choice,
-            stream=stream,
-            thinking_config=thinking_config,
-        )
-
     async def execute_tool(
         self,
         tool_call: dict[str, Any],
@@ -692,7 +464,7 @@ class Pipe:
             if extra_body:
                 create_kwargs["extra_body"] = extra_body
 
-            response = client.chat.completions.create(**create_kwargs)  # type: ignore
+            response = client.chat.completions.create(**create_kwargs)
 
             collected_content = ""
             collected_tool_calls = []
