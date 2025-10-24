@@ -2,7 +2,7 @@
 title: Auto Anthropic
 author: @nokodo
 description: clean, plug and play Claude manifold pipeline with support for all the latest features from Anthropic
-version: 0.1.0-alpha10
+version: 0.1.0-alpha11
 required_open_webui_version: ">= 0.5.0"
 license: see extension documentation file `auto_claude.md` (License section) for the licensing terms.
 repository_url: https://nokodo.net/github/open-webui-extensions
@@ -598,8 +598,8 @@ class Pipe:
             temperature = 1
         if stop is None:
             stop = []
-        if tools is None:
-            tools = []
+        if tools is None or len(tools) == 0:
+            tools = None
         if tool_choice is None:
             tool_choice = "auto"
         if stream is None:
@@ -630,18 +630,24 @@ class Pipe:
                 event_emitter=event_emitter,
             )
         else:
-            response = await client.chat.completions.create(
-                model=model,
-                messages=messages,  # type: ignore
-                max_tokens=max_tokens,
-                temperature=temperature,
-                top_p=top_p,
-                stop=stop or None,
-                tools=tools,  # type: ignore
-                tool_choice=tool_choice,
-                stream=False,
-                extra_body=extra_body if extra_body else None,
-            )
+            create_kwargs = {
+                "model": model,
+                "messages": messages,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+                "stream": False,
+            }
+            if top_p is not None:
+                create_kwargs["top_p"] = top_p
+            if stop:
+                create_kwargs["stop"] = stop
+            if tools:
+                create_kwargs["tools"] = tools
+                create_kwargs["tool_choice"] = tool_choice
+            if extra_body:
+                create_kwargs["extra_body"] = extra_body
+
+            response = await client.chat.completions.create(**create_kwargs)  # type: ignore
 
             if self.valves.ttft_as_thinking:
                 await self.thinking_status("completed", emitter=event_emitter)
@@ -669,18 +675,24 @@ class Pipe:
         first_iteration_after_tool_call = False
 
         while True:
-            response = client.chat.completions.create(
-                model=model,
-                messages=messages,  # type: ignore
-                max_tokens=max_tokens,
-                temperature=temperature,
-                top_p=top_p,
-                stop=stop or None,
-                tools=tools,  # type: ignore
-                tool_choice=tool_choice,
-                stream=True,
-                extra_body=extra_body,
-            )
+            create_kwargs = {
+                "model": model,
+                "messages": messages,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+                "stream": True,
+            }
+            if top_p is not None:
+                create_kwargs["top_p"] = top_p
+            if stop:
+                create_kwargs["stop"] = stop
+            if tools:
+                create_kwargs["tools"] = tools
+                create_kwargs["tool_choice"] = tool_choice
+            if extra_body:
+                create_kwargs["extra_body"] = extra_body
+
+            response = client.chat.completions.create(**create_kwargs)  # type: ignore
 
             collected_content = ""
             collected_tool_calls = []
@@ -703,6 +715,7 @@ class Pipe:
                         and not first_iteration_with_text
                     ):
                         first_iteration_after_tool_call = False
+                        self.log("Adding separator after tool call", "debug")
                         yield "\n\n---\n\n"
                     if first_output:
                         first_output = False
