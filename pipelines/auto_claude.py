@@ -2,7 +2,7 @@
 title: Auto Anthropic
 author: @nokodo
 description: clean, plug and play Claude manifold pipeline with support for all the latest features from Anthropic
-version: 0.1.0-alpha12
+version: 0.1.0-alpha13
 required_open_webui_version: ">= 0.5.0"
 license: see extension documentation file `auto_claude.md` (License section) for the licensing terms.
 repository_url: https://nokodo.net/github/open-webui-extensions
@@ -23,7 +23,6 @@ from typing import (
     Union,
 )
 
-import requests
 from openai import OpenAI
 from pydantic import BaseModel, Field
 
@@ -65,21 +64,47 @@ REASONING_EFFORT_BUDGET_TOKEN_MAP = {
 # Maximum combined token limit for Claude 4
 MAX_COMBINED_TOKENS = 128_000
 
-CLAUDE_MODELS = [
-    "claude-sonnet-4-5-20250929",
-    "claude-opus-4-1-20250805",
-    "claude-sonnet-4-latest",
-    "claude-opus-4-latest",
-    "claude-sonnet-4-20250514",
-    "claude-opus-4-20250514",
-    "claude-haiku-4-5-20251001",
-]
+# Model specifications based on official Anthropic documentation
+MODEL_SPECS = {
+    # Claude 4.5 models
+    "claude-sonnet-4-5-20250929": {
+        "max_output_tokens": 64_000,
+        "supports_thinking": True,
+    },
+    "claude-sonnet-4-5": {"max_output_tokens": 64_000, "supports_thinking": True},
+    "claude-haiku-4-5-20251001": {
+        "max_output_tokens": 64_000,
+        "supports_thinking": True,
+    },
+    "claude-haiku-4-5": {"max_output_tokens": 64_000, "supports_thinking": True},
+    # Claude 4.1 models
+    "claude-opus-4-1-20250805": {
+        "max_output_tokens": 32_000,
+        "supports_thinking": True,
+    },
+    "claude-opus-4-1": {"max_output_tokens": 32_000, "supports_thinking": True},
+    # Claude 4 models
+    "claude-sonnet-4-20250514": {
+        "max_output_tokens": 64_000,
+        "supports_thinking": True,
+    },
+    "claude-sonnet-4-0": {"max_output_tokens": 64_000, "supports_thinking": True},
+    "claude-sonnet-4-latest": {"max_output_tokens": 64_000, "supports_thinking": True},
+    "claude-opus-4-20250514": {"max_output_tokens": 32_000, "supports_thinking": True},
+    "claude-opus-4-0": {"max_output_tokens": 32_000, "supports_thinking": True},
+    "claude-opus-4-latest": {"max_output_tokens": 32_000, "supports_thinking": True},
+    # Claude 3.7 models
+    "claude-3-7-sonnet-20250219": {
+        "max_output_tokens": 64_000,
+        "supports_thinking": True,
+    },
+    "claude-3-7-sonnet-latest": {
+        "max_output_tokens": 64_000,
+        "supports_thinking": True,
+    },
+}
 
-SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
-MAX_IMAGE_SIZE = 5 * 1024 * 1024  # 5 MB
-MAX_PDF_SIZE = 32 * 1024 * 1024  # 32 MB
-RETRY_STATUS_CODES = {429, 500, 502, 503, 504}
-MAX_RETRIES = 5
+CLAUDE_MODELS = list(MODEL_SPECS.keys())
 
 
 class Pipe:
@@ -128,31 +153,19 @@ class Pipe:
         getattr(logger, level, logger.info)(message)
 
     def get_anthropic_models(self) -> list[dict[str, Any]]:
-        """Return available Claude models with thinking variants."""
+        """Return available Claude models."""
         models: list[dict[str, Any]] = []
 
         for model_name in CLAUDE_MODELS:
-            # Standard model
+            specs = MODEL_SPECS[model_name]
             models.append(
                 {
                     "id": f"anthropic/{model_name}",
                     "name": model_name,
                     "context_length": 200_000,
                     "supports_vision": True,
-                    "supports_thinking": False,
-                    "max_output_tokens": 64_000,
-                }
-            )
-
-            # Extended thinking variant
-            models.append(
-                {
-                    "id": f"anthropic/{model_name}-thinking",
-                    "name": f"{model_name} (thinking)",
-                    "context_length": 200_000,
-                    "supports_vision": True,
-                    "supports_thinking": True,
-                    "max_output_tokens": 64_000,
+                    "supports_thinking": specs["supports_thinking"],
+                    "max_output_tokens": specs["max_output_tokens"],
                 }
             )
 
@@ -190,123 +203,6 @@ class Pipe:
                 emitter=emitter,
                 status="complete",
             )
-
-    def _process_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Process messages for Anthropic format."""
-        processed: list[dict[str, Any]] = []
-
-        for msg in messages:
-            role = msg.get("role", "user")
-            content = msg.get("content")
-            parts: list[dict[str, Any]] = []
-
-            if isinstance(content, list):
-                for part in content:
-                    try:
-                        part_type = part.get("type")
-                        if part_type == "text":
-                            parts.append({"type": "text", "text": part.get("text", "")})
-                        elif part_type == "image_url":
-                            parts.append(self._process_image(part))
-                        elif part_type == "pdf_url":
-                            pdf_part = self._process_pdf(part)
-                            if pdf_part:
-                                parts.append(pdf_part)
-                        elif part_type == "tool_result":
-                            # Handle tool results from function calls
-                            parts.append(
-                                {
-                                    "type": "tool_result",
-                                    "tool_use_id": part.get("tool_use_id"),
-                                    "content": part.get("content", ""),
-                                }
-                            )
-                        elif part_type == "tool_use":
-                            # Handle tool use blocks (assistant's tool calls)
-                            parts.append(
-                                {
-                                    "type": "tool_use",
-                                    "id": part.get("id"),
-                                    "name": part.get("name"),
-                                    "input": part.get("input", {}),
-                                }
-                            )
-                    except Exception as e:
-                        self.log(f"Content part skipped: {e}", "warning")
-            else:
-                parts.append({"type": "text", "text": str(content or "")})
-
-            processed.append({"role": role, "content": parts})
-
-        return processed
-
-    def _process_image(self, image_data: dict[str, Any]) -> dict[str, Any]:
-        """Process image data for Anthropic format."""
-        url = image_data.get("image_url", {}).get("url")
-        if not url:
-            raise ValueError("Missing image URL")
-
-        if url.startswith("data:image"):
-            header, b64data = url.split(",", 1)
-            mime = header.split(":", 1)[1].split(";", 1)[0]
-
-            if mime not in SUPPORTED_IMAGE_TYPES:
-                raise ValueError(f"Unsupported image type: {mime}")
-
-            size = len(b64data) * 3 // 4
-            if size > MAX_IMAGE_SIZE:
-                raise ValueError("Image exceeds size limit")
-
-            return {
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": mime,
-                    "data": b64data,
-                },
-            }
-        else:
-            # URL validation
-            resp = requests.head(url, allow_redirects=True, timeout=5)
-            content_length = int(resp.headers.get("content-length", 0))
-            if content_length > MAX_IMAGE_SIZE:
-                raise ValueError("Image at URL exceeds size limit")
-
-            return {
-                "type": "image",
-                "source": {"type": "url", "url": url},
-            }
-
-    def _process_pdf(self, pdf_data: dict[str, Any]) -> Optional[dict[str, Any]]:
-        """Process PDF data for Anthropic format."""
-        url = pdf_data.get("pdf_url", {}).get("url")
-        if not url:
-            return None
-
-        if url.startswith("data:application/pdf"):
-            _, b64data = url.split(",", 1)
-            size = len(b64data) * 3 // 4
-            if size > MAX_PDF_SIZE:
-                raise ValueError("PDF exceeds size limit")
-
-            return {
-                "type": "document",
-                "source": {
-                    "type": "base64",
-                    "media_type": "application/pdf",
-                    "data": b64data,
-                },
-            }
-        else:
-            resp = requests.head(url, allow_redirects=True, timeout=5)
-            content_length = int(resp.headers.get("content-length", 0))
-            if content_length > MAX_PDF_SIZE:
-                raise ValueError("PDF at URL exceeds size limit")
-
-            return {
-                "type": "document",
-                "source": {"type": "url", "url": url},
-            }
 
     async def execute_tool(
         self,
@@ -568,9 +464,6 @@ class Pipe:
 
         # Clean model name
         model = model_full.split("/", 1)[1] if "/" in model_full else model_full
-        thinking_requested = model.endswith("-thinking")
-        if thinking_requested:
-            model = model.replace("-thinking", "")
 
         # Handle reasoning effort for Claude 4 models
         reasoning_effort = body.get("reasoning_effort", "none")
@@ -595,27 +488,24 @@ class Pipe:
         max_tokens = body.get("max_tokens", 64_000)
         thinking_config = None
 
-        if thinking_requested or budget_tokens:
-            if budget_tokens:
-                # Check combined token limit
-                combined_tokens = budget_tokens + max_tokens
+        if budget_tokens:
+            # Validate combined token limit (thinking + output must not exceed 128K)
+            combined_tokens = budget_tokens + max_tokens
 
-                if combined_tokens > MAX_COMBINED_TOKENS:
-                    error_msg = f"Error: Combined tokens (budget_tokens {budget_tokens} + max_tokens {max_tokens} = {combined_tokens}) exceeds the maximum limit of {MAX_COMBINED_TOKENS}"
-                    self.log(error_msg, "error")
-                    raise ValueError(error_msg)
+            if combined_tokens > MAX_COMBINED_TOKENS:
+                self.log(
+                    f"Error: Combined tokens (budget_tokens {budget_tokens} + max_tokens {max_tokens} = {combined_tokens}) exceeds the maximum limit of {MAX_COMBINED_TOKENS}",
+                    "error",
+                )
+                raise ValueError(
+                    "Invalid request. Please contact your system administrator."
+                )
 
-                max_tokens = combined_tokens
-                thinking_config = {
-                    "type": "enabled",
-                    "budget_tokens": budget_tokens,
-                }
-            else:
-                # Default thinking for -thinking models
-                thinking_config = {
-                    "type": "enabled",
-                    "budget_tokens": 32_000,
-                }
+            # Thinking budget and output tokens are sent separately to the API
+            thinking_config = {
+                "type": "enabled",
+                "budget_tokens": budget_tokens,
+            }
 
         return model, max_tokens, thinking_config
 
@@ -630,15 +520,12 @@ class Pipe:
         # Setup model, max_tokens, and thinking config
         model, max_tokens, thinking_config = self.setup_params(body)
 
-        # Process messages for Anthropic format
-        processed_messages = self._process_messages(body.get("messages", []))
-
         # Here we will also decide whether to use the native Anthropic SDK or the OpenAI SDK for processing - FUTURE TASK
 
         return await self.query_openai_sdk(
             model=model,
             event_emitter=event_emitter,
-            messages=processed_messages,
+            messages=body.get("messages", []),
             max_tokens=max_tokens,
             temperature=body.get("temperature"),
             top_p=body.get("top_p"),
