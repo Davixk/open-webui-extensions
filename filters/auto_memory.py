@@ -5,7 +5,7 @@ description: automatically identify and store valuable information from chats as
 author_email: nokodo@nokodo.net
 author_url: https://nokodo.net
 repository_url: https://nokodo.net/github/open-webui-extensions
-version: 1.0.0-alpha17
+version: 1.0.0-alpha18
 required_open_webui_version: >= 0.5.0
 funding_url: https://ko-fi.com/nokodo
 license: see extension documentation file `auto_memory.md` (License section) for the licensing terms.
@@ -77,12 +77,12 @@ Your job is to determine what actions to take on the memory collection based on 
 <what_to_extract>
 ## What you WANT to extract
 - Personal preferences, opinions, and feelings
-- Long-term information (likely true for months/years)
+- Long-term personal information (likely true for months/years)
 - Future-oriented statements ("from now on", "going forward")
 - Direct memory requests ("remember that", "note this", "forget that")
-- Hobbies, interests, skills, activities
+- Hobbies, interests, skills
 - Important life details (job, education, relationships, location)
-- Goals, plans, aspirations
+- Long term goals, plans, aspirations
 - Recurring patterns or habits
 - Strong likes/dislikes affecting future conversations
 </what_to_extract>
@@ -90,9 +90,10 @@ Your job is to determine what actions to take on the memory collection based on 
 <what_not_to_extract>
 ## What you do NOT want to extract
 - User/assistant names (already in profile)
-- Ephemeral states ("I'm reading this now", "I just woke up")
+- User gender, age and birthdate (already in profile)
+- ANY kind of short-term or ephemeral information that is unlikely to be relevant in future conversations
 - Information the assistant confirms is already known
-- Content from translation/rewrite requests
+- Content from translation/rewrite/summarization/similar tasks ("Please help me write my essay about x")
 - Trivial observations or fleeting thoughts
 - Temporary activities
 - Sarcastic remarks or obvious jokes
@@ -109,12 +110,14 @@ Based on your analysis, return a list of actions:
 
 **UPDATE**: Modify existing memory when:
 - User provides updated/corrected information about the same fact
+- Consolidating small, inseparable or closely related facts into one memory
 - User explicitly asks to update something
 - New information refines but doesn't fundamentally change existing memory
 
 **DELETE**: Remove existing memory when:
 - User explicitly requests to forget something
 - User's statement directly contradicts an existing memory
+- Consolidating memories (update the oldest, delete the rest)
 - Memory is completely obsolete due to new information
 - Duplicate memories exist (keep oldest based on `created_at` timestamp)
 
@@ -124,34 +127,41 @@ When updating or deleting, ONLY use the memory ID from the related memories list
 <consolidation_rules>
 **Core Principle**: Default to keeping memories separate and granular for precise retrieval. Only consolidate when it meaningfully improves memory quality and coherence.
 
-**When to CONSOLIDATE (merge existing memories):**
+**When to CONSOLIDATE** (merge existing memories):
 
-1. **Exact Duplicates** - Same fact, different wording
-   - Action: Delete the newer duplicate, keep the oldest (based on `created_at` timestamp)
-   - Example: "User prefers Python for scripting" + "User likes Python for scripting tasks" → Keep oldest, delete duplicate
+- **Exact Duplicates** - Same fact, different wording
+    - Action: Delete the newer duplicate, keep the oldest (based on `created_at` timestamp)
+    - Example: "User prefers Python for scripting" + "User likes Python for scripting tasks" → Keep oldest, delete duplicate
 
-2. **Direct Conflicts** - Contradictory facts about the same subject
-   - Action: Update the older memory to reflect the latest information, or delete if completely obsolete
-   - Example: "User lives in San Francisco" conflicts with "User moved to Mountain View" → Update or delete old info
+- **Direct Conflicts** - Contradictory facts about the same subject
+    - Action: Update the older memory to reflect the latest information, or delete if completely obsolete
+    - Example: "User lives in San Francisco" conflicts with "User moved to Mountain View" → Update or delete old info
 
-3. **Inseparable Facts** - Multiple facts about the same entity that would be incomplete or confusing if retrieved separately
-   - Action: Merge into the oldest memory as a single self-contained statement, then delete the redundant memories
-   - Test: Would retrieving one fact without the other create confusion or require additional context?
-   - Example: "User's cat is named Luna" + "User's cat is a Siamese" → "User has a Siamese cat named Luna"
-   - Counter-example: "User works at Google" + "User started at Google in 2023" → Keep separate (start date is distinct from employment)
+- **Inseparable Facts** - Multiple facts about the same entity that would be incomplete or confusing if retrieved separately
+    - Action: Merge into the oldest memory as a single self-contained statement, then delete the redundant memories
+    - Test: Would retrieving one fact without the other create confusion or require additional context?
+    - Example: "User's cat is named Luna" + "User's cat is a Siamese" → "User has a Siamese cat named Luna"
+    - Counter-example: "User works at Google" + "User started at Google in 2023" → Keep separate (start date is distinct from employment)
 
-**When to KEEP SEPARATE (or split if wrongly combined):**
+- **Small, better retrieved together** - Closely related facts that enhance understanding when combined
+    - Action: Merge into the oldest memory, delete the others
+    - Test: Would I prefer to retrieve these facts together every time, rather than separately?
+    - Example: "User loves Italian food" + "User loves Indian food" → "User loves Italian and Indian food"
+
+**When to keep SEPARATE** (or split if wrongly combined):
 
 Facts should remain separate when they represent distinct, independently-retrievable information:
 
 - **Similar but distinct facts** - Related information representing different aspects or time periods
-  - Example: "User works at Google" vs "User got promoted to team lead" (employment vs career progression)
+    - Example: "User works at Google" vs "User got promoted to team lead" (employment vs career progression)
   
 - **Past events as journal entries** - Historical facts that provide temporal context
-  - Example: "User bought a Samsung TV" and "User's Samsung TV broke" (separate events in time)
-  
+    - Example: "User bought a Samsung TV" and "User's Samsung TV broke" (separate events in time)
+
 - **Related but separable facts** - Facts about the same topic that are meaningful independently
-  - Example: "User loves dogs" vs "User has a golden retriever named Max" (general preference vs specific pet)
+    - Example: "User loves dogs" vs "User has a golden retriever named Max" (general preference vs specific pet)
+
+- **Too long or complex** - Merging would create an overly long memory that contains too many distinct facts
 
 If an existing memory wrongly combines separable facts: UPDATE the existing memory to contain one fact (preserves timestamp), then ADD new memories for the other facts. Deleting the original would lose the timestamp.
 
@@ -1026,6 +1036,8 @@ class Filter:
                 emitter=emitter,
                 status="in_progress",
             )
+        if self.valves.debug_mode:
+            self.log(f"memory actions to apply: {actions}", level="debug")
 
         # Group actions and define handlers
         operations = {
