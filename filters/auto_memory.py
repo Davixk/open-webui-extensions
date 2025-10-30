@@ -5,7 +5,7 @@ description: automatically identify and store valuable information from chats as
 author_email: nokodo@nokodo.net
 author_url: https://nokodo.net
 repository_url: https://nokodo.net/github/open-webui-extensions
-version: 1.0.0-alpha16
+version: 1.0.0-alpha17
 required_open_webui_version: >= 0.5.0
 funding_url: https://ko-fi.com/nokodo
 license: see extension documentation file `auto_memory.md` (License section) for the licensing terms.
@@ -453,6 +453,10 @@ class Memory(BaseModel):
     created_at: datetime = Field(..., description="Creation timestamp")
     update_at: datetime = Field(..., description="Last update timestamp")
     content: str = Field(..., description="Content of the memory")
+    similarity_score: Optional[float] = Field(
+        None,
+        description="Similarity score (0 to 1 - higher is **more similar** to user query) if available",
+    )
 
 
 def build_actions_request_model(existing_ids: list[str]):
@@ -500,17 +504,20 @@ def build_actions_request_model(existing_ids: list[str]):
     )
 
 
-def searchresult_to_memories(result: SearchResult) -> list[Memory]:
+def searchresults_to_memories(results: SearchResult) -> list[Memory]:
     memories = []
 
-    if not result.ids or not result.documents or not result.metadatas:
+    if not results.ids or not results.documents or not results.metadatas:
         raise ValueError("SearchResult must contain ids, documents, and metadatas")
 
-    # iterate over each query batch
-    for ids_batch, docs_batch, metas_batch in zip(
-        result.ids, result.documents, result.metadatas
+    for batch_idx, (ids_batch, docs_batch, metas_batch) in enumerate(
+        zip(results.ids, results.documents, results.metadatas)
     ):
-        for mem_id, content, meta in zip(ids_batch, docs_batch, metas_batch):
+        distances_batch = results.distances[batch_idx] if results.distances else None
+
+        for doc_idx, (mem_id, content, meta) in enumerate(
+            zip(ids_batch, docs_batch, metas_batch)
+        ):
             if not meta:
                 raise ValueError(f"Missing metadata for memory id={mem_id}")
             if "created_at" not in meta:
@@ -524,11 +531,17 @@ def searchresult_to_memories(result: SearchResult) -> list[Memory]:
             created_at = datetime.fromtimestamp(meta["created_at"])
             updated_at = datetime.fromtimestamp(meta["updated_at"])
 
+            # Extract similarity score if available
+            similarity_score = None
+            if distances_batch is not None and doc_idx < len(distances_batch):
+                similarity_score = round(distances_batch[doc_idx], 3)
+
             mem = Memory(
                 mem_id=mem_id,
                 created_at=created_at,
                 update_at=updated_at,
                 content=content,
+                similarity_score=similarity_score,
             )
             memories.append(mem)
 
@@ -575,9 +588,11 @@ class Filter:
             default=5,
             description="number of related memories to consider when updating memories",
         )
-        related_memories_dist: float = Field(
-            default=0.75,
-            description="distance of memories to consider for updates. Smaller number will be more closely related.",
+        minimum_memory_similarity: Optional[float] = Field(
+            default=None,
+            ge=0.0,
+            le=1.0,
+            description="minimum similarity of memories to consider for updates. higher is more similar to user query. if not set, no filtering is applied.",
         )
         allow_unsafe_user_overrides: bool = Field(
             default=False,
@@ -707,7 +722,12 @@ class Filter:
             hostname == "api.openai.com" and response_model is not None
         )
 
-        temperature = 0.3 if "gpt-5" not in model_name else 1
+        if "gpt-5" in model_name:
+            temperature = 1.0
+            extra_args = {"reasoning_effort": "medium"}
+        else:
+            temperature = 0.3
+            extra_args = {}
 
         client = OpenAI(api_key=api_key, base_url=api_url)
         messages: list[dict[str, str]] = [
@@ -722,11 +742,12 @@ class Filter:
                 level="debug",
             )
 
-            response = client.chat.completions.parse(
+            response = client.chat.completions.parse(  # pyright: ignore[reportAttributeAccessIssue]
                 model=model_name,
                 messages=messages,  # type: ignore[arg-type]
                 temperature=temperature,
                 response_format=response_model,
+                **extra_args,
             )
 
             message = response.choices[0].message
@@ -744,6 +765,7 @@ class Filter:
                 model=model_name,
                 messages=messages,  # type: ignore[arg-type]
                 temperature=temperature,
+                **extra_args,  # pyright: ignore[reportArgumentType]
             )
             self.log(f"sdk response: {response}", level="debug")
 
@@ -821,25 +843,80 @@ class Filter:
             )
         return admin_fallback
 
+    def build_memory_query(self, messages: list[dict[str, Any]]) -> str:
+        """
+        Build a query string for memory retrieval from recent messages.
+
+        Strategy:
+        - Always include: last user message + last assistant response
+        - If user message is short (≤8 words), also include the previous assistant message
+
+        This gives embeddings enough context without overwhelming with noise.
+        """
+        query_parts = []
+
+        # Find last user message and its index
+        last_user_idx = None
+        last_user_msg = None
+        for idx in range(len(messages) - 1, -1, -1):
+            if messages[idx].get("role") == "user":
+                last_user_idx = idx
+                last_user_msg = messages[idx].get("content", "")
+                break
+
+        if last_user_msg is None or last_user_idx is None:
+            raise ValueError("no user message found in messages")
+
+        # Count words in last user message
+        user_word_count = len(last_user_msg.split())
+
+        # Check if we should include extra context for short messages
+        include_extra_context = user_word_count <= 8
+
+        # Build query from most recent to older messages
+        # Add last assistant response (if exists)
+        if last_user_idx + 1 < len(messages):
+            last_assistant_msg = messages[last_user_idx + 1].get("content", "")
+            if last_assistant_msg:
+                query_parts.append(f"Assistant: {last_assistant_msg}")
+
+        # Add last user message
+        query_parts.append(f"User: {last_user_msg}")
+
+        # If short message, add previous assistant context
+        if include_extra_context and last_user_idx > 0:
+            prev_assistant_msg = messages[last_user_idx - 1].get("content", "")
+            if (
+                prev_assistant_msg
+                and messages[last_user_idx - 1].get("role") == "assistant"
+            ):
+                query_parts.append(f"Assistant: {prev_assistant_msg}")
+
+        # Reverse to get chronological order and join
+        query_parts.reverse()
+        query = "\n".join(query_parts)
+
+        self.log(
+            f"built memory query with {len(query_parts)} messages (user message: {user_word_count} words)",
+            level="debug",
+        )
+        self.log(f"memory query: {query}", level="debug")
+
+        return query
+
     async def get_related_memories(
         self,
         messages: list[dict[str, Any]],
         user: UserModel,
     ) -> list[Memory]:
-        latest_user_msg = None
-        for msg in reversed(messages):
-            if msg.get("role") == "user":
-                latest_user_msg = msg.get("content", "")
-                break
-        else:
-            raise ValueError("no user message found in messages")
+        memory_query = self.build_memory_query(messages)
 
         # Query related memories
         try:
             results = await query_memory(
                 request=Request(scope={"type": "http", "app": webui_app}),
                 form_data=QueryMemoryForm(
-                    content=latest_user_msg, k=self.valves.related_memories_n
+                    content=memory_query, k=self.valves.related_memories_n
                 ),
                 user=user,
             )
@@ -857,8 +934,29 @@ class Filter:
             self.log(f"failed to query memories: {e}", level="error")
             raise RuntimeError("failed to query memories") from e
 
-        related_memories = searchresult_to_memories(results) if results else []
-        self.log(f"found {len(related_memories)} related memories", level="info")
+        related_memories = searchresults_to_memories(results) if results else []
+        self.log(
+            f"found {len(related_memories)} related memories before filtering",
+            level="info",
+        )
+
+        # Filter by minimum similarity if configured
+        if self.valves.minimum_memory_similarity is not None:
+            filtered_memories = [
+                mem
+                for mem in related_memories
+                if mem.similarity_score is not None
+                and mem.similarity_score >= self.valves.minimum_memory_similarity
+            ]
+            filtered_count = len(related_memories) - len(filtered_memories)
+            if filtered_count > 0:
+                self.log(
+                    f"filtered out {filtered_count} memories below similarity threshold {self.valves.minimum_memory_similarity}",
+                    level="info",
+                )
+            related_memories = filtered_memories
+
+        self.log(f"using {len(related_memories)} related memories", level="info")
         self.log(f"related memories: {related_memories}", level="debug")
 
         return related_memories
@@ -894,7 +992,9 @@ class Filter:
             self.log(f"action plan: {action_plan}", level="debug")
 
             await self.apply_memory_actions(
-                action_plan=action_plan, user=user, emitter=emitter
+                action_plan=action_plan,  # pyright: ignore[reportArgumentType]
+                user=user,
+                emitter=emitter,
             )
 
         except Exception as e:
