@@ -6,7 +6,7 @@ author_email: nokodo@nokodo.net
 author_url: https://nokodo.net
 funding_url: https://ko-fi.com/nokodo
 repository_url: https://nokodo.net/github/open-webui-extensions
-version: 0.2.1
+version: 1.0.0-alpha1
 required_open_webui_version: >= 0.6.0
 requirements: aiohttp
 license: see extension documentation file `auto_web_search.md` (License section) for the licensing terms.
@@ -14,10 +14,12 @@ license: see extension documentation file `auto_web_search.md` (License section)
 
 import json
 from typing import Any, Literal, Optional, cast
+from urllib.parse import urlparse
 
 import aiohttp
 from open_webui.main import Request, app
 from open_webui.models.users import UserModel, Users
+from open_webui.retrieval.utils import get_content_from_url
 from open_webui.routers.retrieval import SearchForm, process_web_search
 from pydantic import BaseModel, Field
 
@@ -101,7 +103,7 @@ class Tools:
                         "properties": {
                             "search_queries": {
                                 "type": "array",
-                                "description": "An array of search query strings.",
+                                "description": "An array of search queries.",
                                 "items": {
                                     "type": "string",
                                     "title": "Search Query",
@@ -114,7 +116,24 @@ class Tools:
                         "required": ["search_queries"],
                     },
                 },
-            }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "fetch_url_content",
+                    "description": "Browse and retrieve the full content from any URL including webpages, articles, YouTube videos, and other online resources. Use this whenever you need to access content from a specific link.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "url": {
+                                "type": "string",
+                                "description": "The URL to browse and retrieve content from.",
+                            }
+                        },
+                        "required": ["url"],
+                    },
+                },
+            },
         ]
 
     async def web_search(
@@ -148,6 +167,91 @@ class Tools:
             )
         else:
             raise ValueError(f"Unknown search mode: {search_mode}")
+
+    async def fetch_url_content(
+        self,
+        url: str,
+        __event_emitter__: Any = None,
+        __user__: Optional[dict] = None,
+    ) -> str:
+        """Fetch content from a URL."""
+        if __user__ is None:
+            raise ValueError("User information is required")
+
+        user = Users.get_user_by_id(__user__["id"])
+        if user is None:
+            raise ValueError("User not found")
+
+        return await fetch_url(url, emitter=__event_emitter__, user=user)
+
+
+async def fetch_url(url: str, emitter: Any, user: UserModel) -> str:
+    """Fetch content from a URL using the native web loader."""
+    try:
+        # Extract domain name from URL
+        parsed_url = urlparse(url)
+        domain = parsed_url.netloc or parsed_url.path.split("/")[0]
+
+        await emit_status(
+            f"browsing {domain}",
+            status="in_progress",
+            emitter=emitter,
+            done=False,
+        )
+
+        request = await get_request()
+        content, docs = get_content_from_url(request, url)
+
+        for doc in docs:
+            metadata = doc.metadata or {}
+            await emitter(
+                {
+                    "type": "citation",
+                    "data": {
+                        "document": [doc.page_content],
+                        "metadata": [metadata],
+                        "source": {
+                            "name": metadata.get("title")
+                            or metadata.get("source")
+                            or url
+                        },
+                    },
+                }
+            )
+
+        await emit_status(
+            f"read webpage from {domain}",
+            status="complete",
+            emitter=emitter,
+            extra_data={"url": url},
+        )
+
+        return json.dumps(
+            {
+                "status": "success",
+                "url": url,
+                "content": content,
+                "documents": [
+                    {"content": doc.page_content, "metadata": doc.metadata}
+                    for doc in docs
+                ],
+            }
+        )
+
+    except Exception as e:
+        await emit_status(
+            "failed to read webpage",
+            status="error",
+            emitter=emitter,
+            error=True,
+        )
+        return json.dumps(
+            {
+                "status": "error",
+                "url": url,
+                "error": str(e),
+            }
+        )
 
 
 async def native_web_search(
