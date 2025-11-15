@@ -56,7 +56,7 @@ async def emit_status(
     extra_data: Optional[dict] = None,
 ):
     if not emitter:
-        raise ValueError("Emitter is required to emit status updates")
+        raise ValueError("emitter is required to emit status updates")
 
     await emitter(
         {
@@ -166,7 +166,7 @@ class Pipe:
 
     def _anthropic_client(self) -> Anthropic:
         if not self.valves.ANTHROPIC_API_KEY:
-            raise RuntimeError("Missing ANTHROPIC_API_KEY in valves")
+            raise RuntimeError("missing ANTHROPIC_API_KEY in valves")
         return Anthropic(api_key=self.valves.ANTHROPIC_API_KEY)
 
     def get_anthropic_models(self) -> list[dict[str, Any]]:
@@ -229,7 +229,7 @@ class Pipe:
         try:
             tool = tools.get(tool_name) if tools else None
             if not tool:
-                raise ValueError(f"Tool '{tool_name}' not found")
+                raise ValueError(f"tool '{tool_name}' not found")
             arguments = tool_use.get("input")
             if arguments is None and tool_use.get("function"):
                 arg_json = tool_use["function"].get("arguments") or "{}"
@@ -684,7 +684,7 @@ class Pipe:
                 )
 
                 if not host_tools:
-                    raise RuntimeError("Host tools are required for tool execution")
+                    raise RuntimeError("host tools are required for tool execution")
 
                 for tool_use in collected_tool_uses:
                     tool_result = await self.execute_tool(tool_use, host_tools)
@@ -731,11 +731,11 @@ class Pipe:
             return obj
         if hasattr(obj, "model_dump"):
             try:
-                return obj.model_dump(mode="python", exclude_none=True)  # type: ignore[attr-defined]
+                return obj.model_dump(mode="python", exclude_none=True)
             except TypeError:
-                return obj.model_dump()  # type: ignore[attr-defined]
+                return obj.model_dump()
         if hasattr(obj, "dict"):
-            return obj.dict()  # type: ignore[attr-defined]
+            return obj.dict()
         return {}
 
     def setup_params(
@@ -768,7 +768,7 @@ class Pipe:
                     "error",
                 )
                 raise ValueError(
-                    "Invalid request. Please contact your system administrator."
+                    "invalid request. please contact your system administrator."
                 )
             thinking_config = {"type": "enabled", "budget_tokens": budget_tokens}
         return model, max_tokens, thinking_config
@@ -804,7 +804,7 @@ class Pipe:
     ) -> str | AsyncIterator[str]:
         self.log(f"native pipe called with body: {body}", level="debug")
         if not __event_emitter__:
-            raise RuntimeError("Event emitter is required")
+            raise RuntimeError("event emitter is required")
         if self.valves.ttft_as_thinking:
             await self.thinking_status("started", emitter=__event_emitter__)
         if __task__ == "function_calling":
