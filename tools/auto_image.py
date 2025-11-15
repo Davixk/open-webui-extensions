@@ -6,7 +6,7 @@ author_email: nokodo@nokodo.net
 author_url: https://nokodo.net
 funding_url: https://ko-fi.com/nokodo
 repository_url: https://nokodo.net/github/open-webui-extensions
-version: 0.2.0
+version: 0.2.1
 required_open_webui_version: >= 0.6.0
 requirements:
 license: see extension documentation file `auto_image.md` (License section) for the licensing terms.
@@ -221,7 +221,7 @@ class Tools:
 
             return json.dumps(
                 {
-                    "status": "image generation completed successfully!",
+                    "status": "image generation completed successfully! the image was already attached above this message 👆",
                     "image_count": len(images),
                     "images": [
                         {
@@ -236,7 +236,7 @@ class Tools:
         except Exception as e:
             if __event_emitter__:
                 await emit_status(
-                    f"failed to generate image: {str(e)}",
+                    "failed to generate image",
                     status="error",
                     done=True,
                     error=True,
@@ -302,7 +302,7 @@ class Tools:
 
             if not image_files:
                 raise ValueError(
-                    "no image files found in the conversation. Please attach an image first."
+                    "no image files found in the conversation. please attach an image first."
                 )
 
             # Validate image_index (supports negative indexing)
@@ -341,7 +341,7 @@ class Tools:
 
             return json.dumps(
                 {
-                    "status": "image editing completed successfully!",
+                    "status": "image editing completed successfully! the image was already attached above this message 👆",
                     "image_count": len(images),
                     "images": [
                         {
@@ -356,7 +356,7 @@ class Tools:
         except Exception as e:
             if __event_emitter__:
                 await emit_status(
-                    f"failed to edit image: {str(e)}",
+                    "failed to edit image",
                     status="error",
                     done=True,
                     error=True,

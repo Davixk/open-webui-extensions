@@ -2,7 +2,7 @@
 title: Auto Anthropic
 author: @nokodo
 description: clean, plug and play Claude manifold pipeline with support for all the latest features from Anthropic
-version: 0.2.0-beta1
+version: 0.3.0-alpha1
 required_open_webui_version: ">= 0.5.0"
 license: see extension documentation file `auto_claude.md` (License section) for the licensing terms.
 repository_url: https://nokodo.net/github/open-webui-extensions
@@ -138,6 +138,10 @@ class Pipe:
         debug_mode: bool = Field(
             default=False,
             description="enable debug logging",
+        )
+        allow_assistant_images: bool = Field(
+            default=False,
+            description="allow image blocks in assistant messages (not yet supported by Anthropic API)",
         )
 
     def __init__(self) -> None:
@@ -366,6 +370,69 @@ class Pipe:
             return "\n".join(self._coerce_text(item) for item in content)
         return str(content)
 
+    def _convert_image_url_to_anthropic(
+        self, image_block: dict[str, Any]
+    ) -> Optional[dict[str, Any]]:
+        """Convert OpenAI-style image_url block to Anthropic's image format."""
+        image_url_obj = image_block.get("image_url")
+        if not image_url_obj:
+            return None
+
+        url = (
+            image_url_obj.get("url")
+            if isinstance(image_url_obj, dict)
+            else image_url_obj
+        )
+        if not url or not isinstance(url, str):
+            return None
+
+        # Handle base64 data URLs (e.g., "data:image/jpeg;base64,...")
+        if url.startswith("data:"):
+            try:
+                # Parse the data URL
+                header, data = url.split(",", 1)
+                media_type = header.split(";")[0].split(":")[1]
+
+                return {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": media_type,
+                        "data": data,
+                    },
+                }
+            except (ValueError, IndexError) as e:
+                self.log(f"Failed to parse data URL: {e}", "warning")
+                return None
+
+        # Handle regular URLs
+        return {
+            "type": "image",
+            "source": {
+                "type": "url",
+                "url": url,
+            },
+        }
+
+    def _process_content_item(
+        self, item: Any, allow_images: bool = True
+    ) -> Optional[dict[str, Any]]:
+        """Process a single content item (text, image, or image_url) into Anthropic format."""
+        if isinstance(item, dict):
+            item_type = item.get("type")
+            if item_type == "text":
+                return item
+            elif item_type == "image":
+                return item if allow_images else None
+            elif item_type == "image_url":
+                if not allow_images:
+                    return None
+                converted = self._convert_image_url_to_anthropic(item)
+                return converted if converted else None
+        elif isinstance(item, str):
+            return {"type": "text", "text": item}
+        return None
+
     def _convert_openai_tool_calls(
         self, tool_calls: Optional[list[dict[str, Any]]]
     ) -> list[dict[str, Any]]:
@@ -394,15 +461,17 @@ class Pipe:
         tool_calls: Optional[list[dict[str, Any]]],
     ) -> list[dict[str, Any]]:
         blocks: list[dict[str, Any]] = []
+        # TODO: Remove this when Anthropic supports images in assistant messages
+        allow_images = self.valves.allow_assistant_images
+
         if isinstance(content, str):
             if content:
                 blocks.append({"type": "text", "text": content})
         elif isinstance(content, list):
             for item in content:
-                if isinstance(item, dict) and item.get("type") in {"text", "image"}:
-                    blocks.append(item)
-                elif isinstance(item, str):
-                    blocks.append({"type": "text", "text": item})
+                processed = self._process_content_item(item, allow_images=allow_images)
+                if processed:
+                    blocks.append(processed)
         elif content:
             blocks.append({"type": "text", "text": self._coerce_text(content)})
         blocks.extend(self._convert_openai_tool_calls(tool_calls))
@@ -416,10 +485,9 @@ class Pipe:
             blocks.append({"type": "text", "text": content})
         elif isinstance(content, list):
             for item in content:
-                if isinstance(item, dict) and item.get("type") in {"text", "image"}:
-                    blocks.append(item)
-                elif isinstance(item, str):
-                    blocks.append({"type": "text", "text": item})
+                processed = self._process_content_item(item, allow_images=True)
+                if processed:
+                    blocks.append(processed)
         elif content is not None:
             blocks.append({"type": "text", "text": self._coerce_text(content)})
         if not blocks:
@@ -577,12 +645,21 @@ class Pipe:
                             initial_text = block.text or ""
                             prepared["text"] = initial_text
                             if initial_text:
+                                self.log(
+                                    f"TextBlock with initial_text: {repr(initial_text[:50])} "
+                                    f"(after_tool_call={first_iteration_after_tool_call})",
+                                    "debug",
+                                )
                                 if (
                                     first_iteration_after_tool_call
                                     and not first_iteration_with_text
                                 ):
-                                    first_iteration_after_tool_call = False
+                                    self.log(
+                                        "Yielding separator before initial_text",
+                                        "debug",
+                                    )
                                     yield "\n\n---\n\n"
+                                    first_iteration_after_tool_call = False
                                 if first_output:
                                     first_output = False
                                     if self.valves.ttft_as_thinking:
@@ -591,6 +668,10 @@ class Pipe:
                                         )
                                 if first_iteration_with_text:
                                     first_iteration_with_text = False
+                                self.log(
+                                    f"Yielding initial_text: {repr(initial_text[:50])}",
+                                    "debug",
+                                )
                                 yield initial_text
                         elif isinstance(block, ToolUseBlock):
                             prepared["id"] = block.id
@@ -616,12 +697,15 @@ class Pipe:
                                 block_state.get("signature", "") + delta.signature
                             )
                         elif isinstance(delta, TextDelta):
-                            if (
-                                first_iteration_after_tool_call
-                                and not first_iteration_with_text
-                            ):
-                                first_iteration_after_tool_call = False
+                            self.log(
+                                f"TextDelta: {repr(delta.text[:50])} "
+                                f"(after_tool_call={first_iteration_after_tool_call})",
+                                "debug",
+                            )
+                            if first_iteration_after_tool_call:
+                                self.log("Yielding separator from TextDelta", "debug")
                                 yield "\n\n---\n\n"
+                                first_iteration_after_tool_call = False
                             if first_output:
                                 first_output = False
                                 if self.valves.ttft_as_thinking:
@@ -632,6 +716,9 @@ class Pipe:
                                 first_iteration_with_text = False
                             block_state["text"] = (
                                 block_state.get("text", "") + delta.text
+                            )
+                            self.log(
+                                f"Yielding delta.text: {repr(delta.text[:50])}", "debug"
                             )
                             yield delta.text
                         elif isinstance(delta, InputJSONDelta):

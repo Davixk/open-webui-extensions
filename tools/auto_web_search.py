@@ -1,7 +1,7 @@
 """
 title: Auto Web Search
 author: @nokodo
-description: A tool for performing automated web searches.
+description: make native automated web searches using the built-in web search engine
 author_email: nokodo@nokodo.net
 author_url: https://nokodo.net
 funding_url: https://ko-fi.com/nokodo
