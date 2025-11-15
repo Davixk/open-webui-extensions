@@ -1,7 +1,7 @@
 """
 title: Auto Image
 author: @nokodo
-description: tools for automated image generation and editing using AI
+description: native image generation and editing tools using built-in image engines
 author_email: nokodo@nokodo.net
 author_url: https://nokodo.net
 funding_url: https://ko-fi.com/nokodo
