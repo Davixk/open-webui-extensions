@@ -2,7 +2,7 @@
 title: Auto Anthropic
 author: @nokodo
 description: clean, plug and play Claude manifold pipeline with support for all the latest features from Anthropic
-version: 0.3.0-alpha1
+version: 0.4.0
 required_open_webui_version: ">= 0.5.0"
 license: see extension documentation file `auto_claude.md` (License section) for the licensing terms.
 repository_url: https://nokodo.net/github/open-webui-extensions
@@ -11,7 +11,9 @@ funding_url: https://ko-fi.com/nokodo
 
 from __future__ import annotations
 
+import base64
 import copy
+import io
 import json
 import logging
 import os
@@ -44,33 +46,8 @@ from anthropic.types import (
     ThinkingDelta,
     ToolUseBlock,
 )
+from PIL import Image, ImageOps
 from pydantic import BaseModel, Field
-
-LogLevel = Literal["debug", "info", "warning", "error"]
-
-
-async def emit_status(
-    description: str,
-    emitter: Any,
-    status: Literal["in_progress", "complete", "error"] = "complete",
-    extra_data: Optional[dict] = None,
-):
-    if not emitter:
-        raise ValueError("emitter is required to emit status updates")
-
-    await emitter(
-        {
-            "type": "status",
-            "data": {
-                "description": description,
-                "status": status,
-                "done": status in ("complete", "error"),
-                "error": status == "error",
-                **(extra_data or {}),
-            },
-        }
-    )
-
 
 REASONING_EFFORT_BUDGET_TOKEN_MAP = {
     "none": None,
@@ -121,6 +98,57 @@ MODEL_SPECS = {
 }
 
 CLAUDE_MODELS = list(MODEL_SPECS.keys())
+CLAUDE_MAX_IMAGE_SIZE_MB = 4.0
+CLAUDE_IMAGE_FORMAT = "WEBP"
+
+LogLevel = Literal["debug", "info", "warning", "error"]
+ImageFormat = Literal["WEBP", "JPEG", "PNG"]
+
+
+async def emit_status(
+    description: str,
+    emitter: Any,
+    status: Literal["in_progress", "complete", "error"] = "complete",
+    extra_data: Optional[dict] = None,
+):
+    if not emitter:
+        raise ValueError("emitter is required to emit status updates")
+
+    await emitter(
+        {
+            "type": "status",
+            "data": {
+                "description": description,
+                "status": status,
+                "done": status in ("complete", "error"),
+                "error": status == "error",
+                **(extra_data or {}),
+            },
+        }
+    )
+
+
+def b64_url_to_image(b64_url: str) -> Image.Image:
+    """
+    Converts a base64 data URL to a PIL Image.
+
+    Args:
+        b64_url: Base64 data URL (e.g., "data:image/png;base64,iVBORw0KG...")
+
+    Returns:
+        PIL Image object with EXIF orientation applied
+    """
+    # Strip data URL prefix if present
+    if "base64," in b64_url:
+        b64_data = b64_url.split("base64,", 1)[1]
+    else:
+        b64_data = b64_url
+
+    image_bytes = base64.b64decode(b64_data)
+    image = Image.open(io.BytesIO(image_bytes))
+
+    # Apply EXIF orientation to prevent rotation issues with phone photos
+    return ImageOps.exif_transpose(image) or image
 
 
 class Pipe:
@@ -264,6 +292,105 @@ class Pipe:
                 "error": f"Error executing tool '{tool_name}': {exc}",
             }
 
+    def ensure_image_under_size(
+        self,
+        image: Image.Image | str,
+        max_size_mb: float = CLAUDE_MAX_IMAGE_SIZE_MB,
+        image_format: ImageFormat = CLAUDE_IMAGE_FORMAT,
+        initial_quality: int = 90,
+        min_quality: int = 60,
+    ) -> tuple[str, str]:
+        """
+        Ensures an image is under the specified size when base64 encoded.
+        If original data is provided and already under limit, returns it unchanged.
+        Otherwise converts to WEBP format for optimal compression.
+
+        Args:
+            image: PIL Image object to compress
+            original_b64: Original base64 data (if available)
+            original_format: Original media type (if available)
+            max_size_mb: Maximum size in megabytes for base64 encoded result
+            image_format: Target format for conversion (default WEBP)
+            initial_quality: Starting quality (1-100)
+            min_quality: Minimum acceptable quality before resizing
+
+        Returns:
+            tuple of (base64_string, media_type)
+        """
+        max_bytes = int(max_size_mb * 1024 * 1024)
+
+        if isinstance(image, str):
+            # Input is base64 data URL.
+            # Extract media type and base64 data
+            if image.startswith("data:") and ";base64," in image:
+                header, b64_data = image.split(",", 1)
+                media_type = header.split(";")[0].split(":")[1]
+            else:
+                media_type = "application/octet-stream"
+                b64_data = image
+
+            # Calculate actual base64 string size (bytes)
+            # The base64 string length IS the size that will be sent to the API
+            size_bytes = len(b64_data)
+            if size_bytes <= max_bytes:
+                self.log(
+                    f"Image already under limit ({size_bytes / (1024 * 1024):.2f} MB), skipping conversion",
+                    "info",
+                )
+                return b64_data, media_type
+            else:
+                # Need to convert from base64 to PIL Image
+                image = b64_url_to_image(image)
+
+        # Need to compress - start timing
+        compression_start = time.time()
+        img = image.copy()
+        quality = initial_quality
+        compression_iterations = 0
+
+        while True:
+            compression_iterations += 1
+            buffer = io.BytesIO()
+            # Use method=3 for WEBP (good balance of speed/compression)
+            # method=6 is extremely slow, method=3 is ~4x faster with similar quality
+            img.save(buffer, format=image_format, quality=quality, method=3)
+            size = buffer.tell()
+
+            # Check base64 size (base64 is ~1.37x larger than raw bytes)
+            estimated_b64_size = (size * 4 + 2) // 3
+
+            if estimated_b64_size <= max_bytes:
+                compression_time = time.time() - compression_start
+                self.log(
+                    f"Image compressed to {estimated_b64_size / (1024 * 1024):.2f} MB "
+                    f"with quality={quality}, format={image_format} "
+                    f"in {compression_time:.2f}s ({compression_iterations} iterations)"
+                )
+                b64_string = base64.b64encode(buffer.getvalue()).decode("utf-8")
+                return b64_string, f"image/{image_format.lower()}"
+
+            # Try reducing quality first
+            if quality > min_quality:
+                quality -= 5
+                continue
+
+            # If quality is too low, resize the image
+            new_width = int(img.width * 0.9)
+            new_height = int(img.height * 0.9)
+
+            if new_width < 100 or new_height < 100:
+                # Image is too small, just return what we have
+                compression_time = time.time() - compression_start
+                self.log(
+                    f"Image compression reached minimum size after {compression_time:.2f}s "
+                    f"({compression_iterations} iterations), final size: {estimated_b64_size / (1024 * 1024):.2f} MB"
+                )
+                b64_string = base64.b64encode(buffer.getvalue()).decode("utf-8")
+                return b64_string, f"image/{image_format.lower()}"
+
+            img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+            quality = initial_quality
+
     async def query_anthropic_sdk(
         self,
         messages: list[dict[str, Any]],
@@ -389,20 +516,19 @@ class Pipe:
         # Handle base64 data URLs (e.g., "data:image/jpeg;base64,...")
         if url.startswith("data:"):
             try:
-                # Parse the data URL
-                header, data = url.split(",", 1)
-                media_type = header.split(";")[0].split(":")[1]
+                # Convert to PIL Image and ensure it's under size limit
+                compressed_data, media_type = self.ensure_image_under_size(image=url)
 
                 return {
                     "type": "image",
                     "source": {
                         "type": "base64",
                         "media_type": media_type,
-                        "data": data,
+                        "data": compressed_data,
                     },
                 }
-            except (ValueError, IndexError) as e:
-                self.log(f"Failed to parse data URL: {e}", "warning")
+            except Exception as e:
+                self.log(f"Failed to process image: {e}", "warning")
                 return None
 
         # Handle regular URLs

@@ -757,12 +757,12 @@ class Filter:
                 level="debug",
             )
 
-            response = client.chat.completions.parse(  # pyright: ignore[reportAttributeAccessIssue]
+            response = client.chat.completions.parse(
                 model=model_name,
                 messages=messages,  # type: ignore[arg-type]
                 temperature=temperature,
                 response_format=response_model,
-                **extra_args,
+                **extra_args,  # pyright: ignore[reportArgumentType]
             )
 
             message = response.choices[0].message

@@ -145,7 +145,7 @@ class Tools:
                             },
                             "image_index": {
                                 "type": "integer",
-                                "description": "Index of the user-uploaded image to edit (0 for first, -1 for most recent). Defaults to -1 (most recent).",
+                                "description": "Index of the user-uploaded image to edit (0 for first, -1 for most recent). Defaults to -1 (most recent). Omit unless you want to edit a PREVIOUS image in the chat.",
                             },
                             "negative_prompt": {
                                 "type": "string",
