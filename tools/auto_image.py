@@ -7,7 +7,7 @@ author_url: https://nokodo.net
 funding_url: https://ko-fi.com/nokodo
 repository_url: https://nokodo.net/github/open-webui-extensions
 version: 0.2.1
-required_open_webui_version: >= 0.6.0
+required_open_webui_version: >= 0.6.36
 requirements:
 license: see extension documentation file `auto_image.md` (License section) for the licensing terms.
 """
