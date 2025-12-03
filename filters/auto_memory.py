@@ -1256,6 +1256,17 @@ class Filter:
             level="debug",
         )
 
+        user_memory_enabled = False
+        if hasattr(user, "settings") and user.settings:
+            user_memory_enabled = user.settings.model_dump().get("ui", {}).get("memory", False)
+        
+        if not user_memory_enabled:
+            self.log(
+                "memory is disabled in user's personalization settings, skipping",
+                level="info",
+            )
+            return body
+
         self.user_valves = __user__.get("valves", self.UserValves())
         if not isinstance(self.user_valves, self.UserValves):
             raise ValueError("invalid user valves")
