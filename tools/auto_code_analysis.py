@@ -6,7 +6,7 @@ author_email: nokodo@nokodo.net
 author_url: https://nokodo.net
 funding_url: https://ko-fi.com/nokodo
 repository_url: https://nokodo.net/github/open-webui-extensions
-version: 1.0.0
+version: 1.0.1
 required_open_webui_version: >= 0.6.0
 requirements: aiohttp, websockets, e2b_code_interpreter
 license: see extension documentation file `auto_code_analysis.md` (License section) for the licensing terms.
@@ -21,7 +21,7 @@ import mimetypes
 import re
 import uuid
 from abc import ABC, abstractmethod
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, get_args
 
 import aiohttp
 from e2b_code_interpreter import AsyncSandbox
@@ -35,6 +35,13 @@ logger = logging.getLogger(__name__)
 # ==========================================
 # Helper Functions
 # ==========================================
+LogLevel = Literal["debug", "info", "warning", "error", "exception", "critical"]
+
+
+def log(message: Any, level: LogLevel = "info"):
+    if level not in get_args(LogLevel):
+        level = "info"
+    getattr(logger, level, logger.info)(message)
 
 
 async def emit_status(
@@ -264,7 +271,7 @@ class JupyterSandbox(SandboxAdapter):
                             f"work/sessions/{item['name']}"
                         )
         except Exception as e:
-            logger.warning(f"Failed to cleanup old sessions: {e}")
+            log(f"Failed to cleanup old sessions: {e}", level="warning")
 
     async def start(self, sandbox_id: Optional[str] = None):
         # For Jupyter, we use a session directory concept.
@@ -365,8 +372,9 @@ except FileNotFoundError:
 
 
 class E2BSandbox(SandboxAdapter):
-    def __init__(self, api_key: str):
+    def __init__(self, template: str, api_key: str):
         self.api_key = api_key
+        self.template = template
         self.sandbox = None
 
     async def start(self, sandbox_id: Optional[str] = None):
@@ -376,12 +384,12 @@ class E2BSandbox(SandboxAdapter):
                     sandbox_id, api_key=self.api_key
                 )
             except Exception as e:
-                logger.warning(f"Failed to resume sandbox {sandbox_id}: {e}")
+                log(f"Failed to resume sandbox {sandbox_id}: {e}", level="warning")
                 self.sandbox = None
 
         if not self.sandbox:
             self.sandbox = await AsyncSandbox.create(
-                template="nokodo-ai-code-interpreter-v1", api_key=self.api_key
+                template=self.template, api_key=self.api_key
             )
 
     async def run_code(self, code: str, timeout: int = 60) -> ExecutionResult:
@@ -452,7 +460,7 @@ class E2BSandbox(SandboxAdapter):
         if not self.sandbox:
             raise RuntimeError("Sandbox not started")
         try:
-            content = await self.sandbox.files.read(filename)
+            content = await self.sandbox.files.read(filename, format="bytes")
             if isinstance(content, str):
                 return content.encode("utf-8")
             return content
@@ -530,6 +538,10 @@ class Tools:
             default="",
             description="E2B API Key (if using E2B engine)",
         )
+        E2B_TEMPLATE: str = Field(
+            default="code-interpreter-v1",
+            description="E2B Sandbox Template (if using E2B engine)",
+        )
         # Common Settings
         TIMEOUT: int = Field(
             default=60,
@@ -547,7 +559,8 @@ class Tools:
                         "Execute Python code in a notebook to perform calculations, data analysis, and any file operations like creating or editing files.\n"
                         "The notebook comes pre-installed with all the libraries you might need.\n"
                         "Your notebook session and environment automatically persists across this entire conversation, so you can build and iterate over multiple turns.\n"
-                        "You can upload files to the execution environment and download any generated files after execution. All user-attached files to the current chat are automatically included in the execution environment."
+                        "You can upload files to the execution environment and download any generated files after execution. All user-attached files to the current chat are automatically included in the execution environment.\n"
+                        "Any files created or modified during execution are automatically downloaded after execution.\n"
                     ),
                     "parameters": {
                         "type": "object",
@@ -699,7 +712,9 @@ class Tools:
             if engine == "e2b":
                 if not self.valves.E2B_API_KEY:
                     raise ValueError("E2B_API_KEY is not set.")
-                sandbox = E2BSandbox(self.valves.E2B_API_KEY)
+                sandbox = E2BSandbox(
+                    template=self.valves.E2B_TEMPLATE, api_key=self.valves.E2B_API_KEY
+                )
             elif engine == "jupyter":
                 sandbox = JupyterSandbox(
                     self.valves.JUPYTER_URL,
@@ -713,7 +728,7 @@ class Tools:
 
             await sandbox.start(sandbox_id)
         except Exception as e:
-            logger.exception("Failed to start sandbox")
+            log(f"Failed to start sandbox: {e}", level="exception")
             await emit_status(
                 "error starting analysis",
                 status="error",
@@ -801,6 +816,7 @@ class Tools:
                 emitter=__event_emitter__,
                 done=True,
             )
+            log(f"Execution completed. Results: {response_data}", level="info")
 
             # Serialize
             output_str = json.dumps(response_data, indent=2)
@@ -819,7 +835,7 @@ class Tools:
             return output_str
 
         except Exception as e:
-            logger.exception("Error during execution")
+            log(f"Error during execution: {e}", level="exception")
             await emit_status(
                 "error during analysis",
                 status="error",
