@@ -1245,6 +1245,11 @@ class Filter:
         if __user__ is None:
             raise ValueError("user information is required")
 
+        is_temporary = not body.get("chat_id") or body.get("chat_id", "").startswith("local:")
+        if is_temporary:
+            self.log("temporary chat, skipping", level="info")
+            return body
+
         user = Users.get_user_by_id(__user__["id"])
         if user is None:
             raise ValueError("user not found")
