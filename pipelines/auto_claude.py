@@ -2,7 +2,7 @@
 title: Auto Anthropic
 author: @nokodo
 description: clean, plug and play Claude manifold pipeline with support for all the latest features from Anthropic
-version: 0.4.1
+version: 0.4.2
 required_open_webui_version: ">= 0.5.0"
 license: see extension documentation file `auto_claude.md` (License section) for the licensing terms.
 repository_url: https://nokodo.net/github/open-webui-extensions
@@ -214,6 +214,7 @@ class Pipe:
                     "supports_vision": True,
                     "supports_thinking": specs["supports_thinking"],
                     "max_output_tokens": specs["max_output_tokens"],
+                    "info": {"params": {"function_calling": "native"}},
                 }
             )
         self.log(f"Available native models: {models}", level="debug")
@@ -1056,6 +1057,7 @@ class Pipe:
         __event_emitter__: Optional[Callable[[Any], Awaitable[None]]] = None,
         __tools__: Optional[dict[str, Any]] = None,
         __task__: Optional[str] = None,
+        __metadata__: Optional[dict[str, Any]] = None,
     ) -> str | AsyncIterator[str]:
         self.log(f"native pipe called with body: {body}", level="debug")
         if not __event_emitter__:
@@ -1064,6 +1066,16 @@ class Pipe:
             await self.thinking_status("started", emitter=__event_emitter__)
         if __task__ == "function_calling":
             return ""
+
+        # Merge tools from metadata if present
+        if __metadata__ and "tools" in __metadata__:
+            metadata_tools = __metadata__["tools"]
+            if isinstance(metadata_tools, dict):
+                merged_tools = {**metadata_tools}
+                if __tools__:
+                    merged_tools.update(__tools__)
+                __tools__ = merged_tools
+
         return await self.auto_claude(
             body=body,
             event_emitter=__event_emitter__,
