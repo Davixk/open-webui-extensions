@@ -2,7 +2,7 @@
 title: Auto Anthropic
 author: @nokodo
 description: clean, plug and play Claude manifold pipeline with support for all the latest features from Anthropic
-version: 0.4.0
+version: 0.4.1
 required_open_webui_version: ">= 0.5.0"
 license: see extension documentation file `auto_claude.md` (License section) for the licensing terms.
 repository_url: https://nokodo.net/github/open-webui-extensions
@@ -65,6 +65,7 @@ MODEL_SPECS = {
         "supports_thinking": True,
     },
     "claude-sonnet-4-5": {"max_output_tokens": 64_000, "supports_thinking": True},
+    "claude-opus-4-5": {"max_output_tokens": 64_000, "supports_thinking": True},
     "claude-haiku-4-5-20251001": {
         "max_output_tokens": 64_000,
         "supports_thinking": True,
@@ -321,26 +322,67 @@ class Pipe:
 
         if isinstance(image, str):
             # Input is base64 data URL.
+            original_input = image  # Keep original for fallback
             # Extract media type and base64 data
             if image.startswith("data:") and ";base64," in image:
                 header, b64_data = image.split(",", 1)
-                media_type = header.split(";")[0].split(":")[1]
+                declared_media_type = header.split(";")[0].split(":")[1]
             else:
-                media_type = "application/octet-stream"
+                declared_media_type = "application/octet-stream"
                 b64_data = image
 
             # Calculate actual base64 string size (bytes)
             # The base64 string length IS the size that will be sent to the API
             size_bytes = len(b64_data)
-            if size_bytes <= max_bytes:
+
+            # Always verify the actual image format matches declared media type
+            # by decoding and checking the real format
+            try:
+                image_bytes = base64.b64decode(b64_data)
+                pil_image = Image.open(io.BytesIO(image_bytes))
+                actual_format = pil_image.format  # e.g., "JPEG", "PNG", "WEBP", "GIF"
+
+                # Map PIL format to media type
+                format_to_media_type = {
+                    "JPEG": "image/jpeg",
+                    "PNG": "image/png",
+                    "WEBP": "image/webp",
+                    "GIF": "image/gif",
+                }
+                if actual_format:
+                    actual_media_type = format_to_media_type.get(
+                        actual_format, f"image/{actual_format.lower()}"
+                    )
+                else:
+                    actual_media_type = "application/octet-stream"
+
                 self.log(
-                    f"Image already under limit ({size_bytes / (1024 * 1024):.2f} MB), skipping conversion",
-                    "info",
+                    f"Image format check: declared={declared_media_type}, actual={actual_media_type} "
+                    f"(PIL format={actual_format}), size={size_bytes / (1024 * 1024):.2f} MB",
+                    "debug",
                 )
-                return b64_data, media_type
-            else:
-                # Need to convert from base64 to PIL Image
-                image = b64_url_to_image(image)
+
+                if size_bytes <= max_bytes:
+                    # Use the ACTUAL media type, not the declared one
+                    if declared_media_type != actual_media_type:
+                        self.log(
+                            f"Media type mismatch: header says {declared_media_type} but image is actually {actual_media_type}. "
+                            f"Using actual media type.",
+                            "warning",
+                        )
+                    self.log(
+                        f"Image already under limit ({size_bytes / (1024 * 1024):.2f} MB), skipping conversion",
+                        "info",
+                    )
+                    return b64_data, actual_media_type
+
+                # Need to compress - convert PIL image with EXIF orientation
+                image = ImageOps.exif_transpose(pil_image) or pil_image
+
+            except Exception as e:
+                self.log(f"Failed to verify image format: {e}", "warning")
+                # Fall back to converting the image anyway
+                image = b64_url_to_image(original_input)
 
         # Need to compress - start timing
         compression_start = time.time()
