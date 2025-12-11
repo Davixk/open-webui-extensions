@@ -1245,6 +1245,11 @@ class Filter:
         if __user__ is None:
             raise ValueError("user information is required")
 
+        is_temporary = not body.get("chat_id") or body.get("chat_id", "").startswith("local:")
+        if is_temporary:
+            self.log("temporary chat, skipping", level="info")
+            return body
+
         user = Users.get_user_by_id(__user__["id"])
         if user is None:
             raise ValueError("user not found")
@@ -1255,6 +1260,17 @@ class Filter:
             f"user.id = {user.id} user.name = {user.name} user.email = {user.email}",
             level="debug",
         )
+
+        user_memory_enabled = False
+        if hasattr(user, "settings") and user.settings:
+            user_memory_enabled = user.settings.model_dump().get("ui", {}).get("memory", False)
+        
+        if not user_memory_enabled:
+            self.log(
+                "memory is disabled in user's personalization settings, skipping",
+                level="info",
+            )
+            return body
 
         self.user_valves = __user__.get("valves", self.UserValves())
         if not isinstance(self.user_valves, self.UserValves):
