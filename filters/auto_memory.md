@@ -19,6 +19,8 @@ You get:
 
 <br>
 
+> **Warning:** This extension does NOT work when Redis caching is enabled. Redis-based caching alters the event/coroutine loop used by Open WebUI and can prevent Auto Memory's background listeners and async tasks from running correctly. If you rely on Auto Memory, disable Redis caching or use an alternative storage backend.
+
 ## 💾 How It Works
 
 - **Auto-extracts** new or changed "facts" from recent user messages

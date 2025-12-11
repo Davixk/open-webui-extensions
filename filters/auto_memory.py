@@ -5,7 +5,7 @@ description: automatically identify and store valuable information from chats as
 author_email: nokodo@nokodo.net
 author_url: https://nokodo.net
 repository_url: https://nokodo.net/github/open-webui-extensions
-version: 1.1.0-alpha1
+version: 1.1.1
 required_open_webui_version: >= 0.5.0
 funding_url: https://ko-fi.com/nokodo
 license: see extension documentation file `auto_memory.md` (License section) for the licensing terms.
@@ -1245,8 +1245,8 @@ class Filter:
         if __user__ is None:
             raise ValueError("user information is required")
 
-        is_temporary = not body.get("chat_id") or body.get("chat_id", "").startswith("local:")
-        if is_temporary:
+        chat_id = body.get("chat_id")
+        if not chat_id or chat_id.startswith("local:"):
             self.log("temporary chat, skipping", level="info")
             return body
 
@@ -1261,11 +1261,7 @@ class Filter:
             level="debug",
         )
 
-        user_memory_enabled = False
-        if hasattr(user, "settings") and user.settings:
-            user_memory_enabled = user.settings.model_dump().get("ui", {}).get("memory", False)
-        
-        if not user_memory_enabled:
+        if user.settings and (user.settings.ui or {}).get("memory", False):
             self.log(
                 "memory is disabled in user's personalization settings, skipping",
                 level="info",
