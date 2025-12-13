@@ -5,7 +5,7 @@ description: automatically identify and store valuable information from chats as
 author_email: nokodo@nokodo.net
 author_url: https://nokodo.net
 repository_url: https://nokodo.net/github/open-webui-extensions
-version: 1.1.1
+version: 1.2.0
 required_open_webui_version: >= 0.5.0
 funding_url: https://ko-fi.com/nokodo
 license: see extension documentation file `auto_memory.md` (License section) for the licensing terms.
@@ -29,7 +29,6 @@ from typing import (
     cast,
     overload,
 )
-from urllib.parse import urlparse
 
 from fastapi import HTTPException, Request
 from open_webui.main import app as webui_app
@@ -44,8 +43,8 @@ from open_webui.routers.memories import (
     query_memory,
     update_memory_by_id,
 )
-from openai import OpenAI
-from pydantic import BaseModel, Field, ValidationError, create_model
+from openai import BadRequestError, OpenAI
+from pydantic import BaseModel, Field, create_model
 
 LogLevel = Literal["debug", "info", "warning", "error"]
 
@@ -708,9 +707,15 @@ class Filter:
         response_model: Optional[Type[R]] = None,
     ) -> Union[str, R]:
         """Generic wrapper around OpenAI chat completions.
-        - Uses SDK for api.openai.com only
-        - Structured outputs when official domain and response_model provided
-        - Returns: model instance or raw string
+
+        Behavior:
+        - If `response_model` is provided, attempts structured outputs first (SDK parse).
+        - If structured outputs are rejected as unsupported (Bad Request), falls back to a
+          normal completion that is explicitly instructed (with a JSON Schema) to return
+          valid JSON matching the schema, then parses the JSON (stripping ```json fences).
+        - If `response_model` is provided, this function returns a validated model instance
+          or raises (it never returns a raw string in that case).
+        - If `response_model` is not provided, returns raw text.
         """
 
         user_has_own_key = bool(
@@ -732,11 +737,6 @@ class Filter:
         )
         api_key = self.user_valves.api_key or self.valves.api_key
 
-        hostname = urlparse(api_url).hostname or ""
-        enable_structured_outputs = (
-            hostname == "api.openai.com" and response_model is not None
-        )
-
         if "gpt-5" in model_name:
             temperature = 1.0
             extra_args = {"reasoning_effort": "medium"}
@@ -750,13 +750,59 @@ class Filter:
             {"role": "user", "content": user_message},
         ]
 
-        if enable_structured_outputs:
-            response_model = cast(Type[R], response_model)
-            self.log(
-                f"using structured outputs with {response_model.__name__}",
-                level="debug",
+        def _strip_json_fences(text: str) -> str:
+            stripped = text.strip()
+
+            fenced = re.search(
+                r"```(?:json)?\s*([\s\S]*?)\s*```",
+                stripped,
+                flags=re.IGNORECASE,
+            )
+            if fenced:
+                return fenced.group(1).strip()
+
+            if stripped.startswith("```"):
+                stripped = re.sub(
+                    r"^```(?:json)?\s*", "", stripped, flags=re.IGNORECASE
+                )
+            if stripped.endswith("```"):
+                stripped = re.sub(r"\s*```$", "", stripped)
+            return stripped.strip()
+
+        def _schema_instructions_for(model: Type[BaseModel]) -> str:
+            schema_json = json.dumps(
+                model.model_json_schema(),
+                ensure_ascii=False,
+                indent=2,
+            )
+            return (
+                "Return ONLY valid JSON (no markdown, no code fences) that conforms to this JSON Schema. "
+                "Do not include any extra keys. If a field is unknown, omit it unless required.\n\n"
+                f"JSON Schema:\n{schema_json}"
             )
 
+        if response_model is None:
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=messages,  # type: ignore[arg-type]
+                temperature=temperature,
+                **extra_args,  # pyright: ignore[reportArgumentType]
+            )
+            self.log(f"sdk response: {response}", level="debug")
+
+            text_response = response.choices[0].message.content
+            if text_response is None:
+                raise ValueError(f"no text response from LLM. message={text_response}")
+
+            return text_response
+
+        response_model = cast(Type[R], response_model)
+        self.log(
+            f"attempting structured outputs with {response_model.__name__}",
+            level="debug",
+        )
+
+        try:
             response = client.chat.completions.parse(
                 model=model_name,
                 messages=messages,  # type: ignore[arg-type]
@@ -773,29 +819,31 @@ class Filter:
 
             return cast(R, message.parsed)
 
-        else:
-            self.log("not using structured outputs", level="debug")
+        except BadRequestError as e:
+            self.log(
+                f"structured outputs unsupported by API; falling back to schema-instructed JSON. error={e}",
+                level="warning",
+            )
+
+            fallback_messages: list[dict[str, str]] = [
+                {"role": "system", "content": system_prompt},
+                {"role": "system", "content": _schema_instructions_for(response_model)},
+                {"role": "user", "content": user_message},
+            ]
 
             response = client.chat.completions.create(
                 model=model_name,
-                messages=messages,  # type: ignore[arg-type]
+                messages=fallback_messages,  # type: ignore[arg-type]
                 temperature=temperature,
                 **extra_args,  # pyright: ignore[reportArgumentType]
             )
-            self.log(f"sdk response: {response}", level="debug")
 
             text_response = response.choices[0].message.content
             if text_response is None:
                 raise ValueError(f"no text response from LLM. message={text_response}")
 
-            if response_model:
-                try:
-                    return response_model.model_validate_json(text_response)
-                except ValidationError as e:
-                    self.log(f"response model validation error: {e}", level="warning")
-                    raise
-
-            return text_response
+            cleaned = _strip_json_fences(text_response)
+            return response_model.model_validate_json(cleaned)
 
     def __init__(self):
         self.valves = self.Valves()
@@ -1261,7 +1309,7 @@ class Filter:
             level="debug",
         )
 
-        if user.settings and (user.settings.ui or {}).get("memory", False):
+        if user.settings and not (user.settings.ui or {}).get("memory", True):
             self.log(
                 "memory is disabled in user's personalization settings, skipping",
                 level="info",
