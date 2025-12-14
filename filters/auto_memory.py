@@ -15,7 +15,6 @@ import asyncio
 import json
 import logging
 import re
-import threading
 from datetime import datetime
 from typing import (
     Any,
@@ -556,21 +555,6 @@ def searchresults_to_memories(results: SearchResult) -> list[Memory]:
             memories.append(mem)
 
     return memories
-
-
-def _run_detached(coro):
-    """Helper to run coroutine in detached thread"""
-
-    def _runner():
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(coro)
-        finally:
-            loop.close()
-
-    thread = threading.Thread(target=_runner, daemon=True)
-    thread.start()
 
 
 R = TypeVar("R", bound=BaseModel)
@@ -1316,19 +1300,35 @@ class Filter:
             )
             return body
 
-        self.user_valves = __user__.get("valves", self.UserValves())
-        if not isinstance(self.user_valves, self.UserValves):
-            raise ValueError("invalid user valves")
+        # __user__["valves"] is typically a dict; parse it into the Pydantic model.
+        raw_valves = (__user__ or {}).get("valves", None)
+        try:
+            if raw_valves is None:
+                self.user_valves = self.UserValves()
+            elif isinstance(raw_valves, self.UserValves):
+                self.user_valves = raw_valves
+            elif isinstance(raw_valves, dict):
+                self.user_valves = self.UserValves.model_validate(raw_valves)
+            else:
+                # last resort: try to coerce
+                self.user_valves = self.UserValves.model_validate(raw_valves)
+        except Exception as e:
+            raise ValueError(f"invalid user valves: {e}") from e
+
         self.user_valves = cast(Filter.UserValves, self.user_valves)
+
         self.log(f"user valves = {self.user_valves}", level="debug")
 
         if not self.user_valves.enabled:
             self.log("component was disabled by user, skipping", level="info")
             return body
 
-        _run_detached(
+        # Run on the current event loop; do NOT create a new loop/thread.
+        asyncio.create_task(
             self.auto_memory(
-                body.get("messages", []), user=user, emitter=__event_emitter__
+                body.get("messages", []),
+                user=user,
+                emitter=__event_emitter__,
             )
         )
 
