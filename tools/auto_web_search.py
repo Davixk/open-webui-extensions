@@ -1,7 +1,7 @@
 """
 title: Auto Web Search
 author: @nokodo
-description: make native automated web searches using the built-in web search engine
+description: A tool for performing automated web searches.
 author_email: nokodo@nokodo.net
 author_url: https://nokodo.net
 funding_url: https://ko-fi.com/nokodo
@@ -188,6 +188,10 @@ class Tools:
 async def fetch_url(url: str, emitter: Any, user: UserModel) -> str:
     """Fetch content from a URL using the native web loader."""
     try:
+        # Normalize URL to ensure it has a protocol
+        if not url.startswith(('http://', 'https://')):
+            url = 'https://' + url
+        
         # Extract domain name from URL
         parsed_url = urlparse(url)
         domain = parsed_url.netloc or parsed_url.path.split("/")[0]
@@ -272,15 +276,32 @@ async def native_web_search(
             request=await get_request(), form_data=form, user=user
         )
 
-        items = cast(list[dict[str, Any]], result["docs"])
-        item_count = cast(int, result["loaded_count"])
+        # Handle different result structures based on OpenWebUI configuration
+        if "docs" in result:
+            items = cast(list[dict[str, Any]], result["docs"])
+            item_count = cast(int, result["loaded_count"])
+        else:
+            # When "Ignore Embedding and Retrieval" is disabled, result might have different structure
+            items = []
+            item_count = 0
+            # Try to extract results from alternative structure
+            if "results" in result:
+                items = result["results"]
+                item_count = len(items)
+            elif "items" in result:
+                items = result["items"]
+                item_count = len(items)
+            else:
+                # If no results found, return empty results
+                items = []
+                item_count = 0
 
         search_results = cast(
             list[dict[str, str]],
             [
                 {
-                    "source": item["metadata"]["source"],
-                    "content": item["content"],
+                    "source": item["metadata"]["source"] if item.get("metadata") else item.get("source", ""),
+                    "content": item["content"] if item.get("content") else str(item),
                 }
                 for item in items
             ],
@@ -303,7 +324,7 @@ async def native_web_search(
             f"searched {item_count} website{'s' if item_count != 1 else ''}",
             status="web_search",
             done=True,
-            extra_data={"urls": [sr["source"] for sr in search_results]},
+            extra_data={"urls": [sr["source"] for sr in search_results] if search_results else []},
             emitter=emitter,
         )
 
