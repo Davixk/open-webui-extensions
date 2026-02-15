@@ -5,7 +5,7 @@ description: automatically identify and store valuable information from chats as
 author_email: nokodo@nokodo.net
 author_url: https://nokodo.net
 repository_url: https://nokodo.net/github/open-webui-extensions
-version: 1.2.0
+version: 1.2.1
 required_open_webui_version: >= 0.5.0
 funding_url: https://ko-fi.com/nokodo
 license: see extension documentation file `auto_memory.md` (License section) for the licensing terms.
@@ -590,6 +590,14 @@ class Filter:
         api_key: str = Field(
             default="", description="API key for OpenAI compatible endpoint"
         )
+        use_ollama_backend: bool = Field(
+            default=False,
+            description="EXPERIMENTAL: Zero Config Mode. Automatically use the internal Ollama backend configured in Open WebUI. Ignores 'openai_api_url' and 'api_key'.",
+        )
+        ollama_fixed_model: Optional[str] = Field(
+            default=None,
+            description="If using Ollama backend, force this specific model (e.g. 'llama3.2:3b') for memory tasks instead of the current chat model. Recommended for performance.",
+        )
         messages_to_consider: int = Field(
             default=4,
             description="global default number of recent messages to consider for memory extraction (user override can supply a different value).",
@@ -624,6 +632,14 @@ class Filter:
         )
         show_status: bool = Field(
             default=True, description="show status of the action."
+        )
+        use_ollama_backend: Optional[bool] = Field(
+            default=None,
+            description="User override: Set true to use internal Ollama backend (Zero Config). Null uses admin default.",
+        )
+        ollama_fixed_model: Optional[str] = Field(
+            default=None,
+            description="User override: Force a specific local model for memory tasks (e.g. 'qwen2.5:1.5b').",
         )
         openai_api_url: Optional[str] = Field(
             default=None,
@@ -690,6 +706,8 @@ class Filter:
         system_prompt: str,
         user_message: str,
         response_model: Type[R],
+        override_api_url: Optional[str] = None,
+        override_model: Optional[str] = None,
     ) -> R: ...
 
     @overload
@@ -698,6 +716,8 @@ class Filter:
         system_prompt: str,
         user_message: str,
         response_model: None = None,
+        override_api_url: Optional[str] = None,
+        override_model: Optional[str] = None,
     ) -> str: ...
 
     async def query_openai_sdk(
@@ -705,6 +725,8 @@ class Filter:
         system_prompt: str,
         user_message: str,
         response_model: Optional[Type[R]] = None,
+        override_api_url: Optional[str] = None,
+        override_model: Optional[str] = None,
     ) -> Union[str, R]:
         """Generic wrapper around OpenAI chat completions.
 
@@ -718,24 +740,46 @@ class Filter:
         - If `response_model` is not provided, returns raw text.
         """
 
-        user_has_own_key = bool(
-            self.user_valves.api_key and self.user_valves.api_key.strip()
-        )
+        # --- Configuration Resolution ---
+        if override_api_url:
+            # Zero Config Mode: use injected overrides directly.
+            # We strictly forbid falling back to global valves to avoid sending local requests to wrong endpoints.
+            api_url = override_api_url
+            model_name = override_model
+            api_key = "ollama"  # Dummy key required by SDK for local endpoints
 
-        api_url = self.get_restricted_user_valve(
-            user_valve_value=self.user_valves.openai_api_url,
-            admin_fallback=self.valves.openai_api_url,
-            authorization_check=user_has_own_key,
-            valve_name="openai_api_url",
-        ).rstrip("/")
+            if not model_name:
+                raise ValueError(
+                    "Zero Config enabled but no model detected via chat context or fixed model valve."
+                )
 
-        model_name = self.get_restricted_user_valve(
-            user_valve_value=self.user_valves.model,
-            admin_fallback=self.valves.model,
-            authorization_check=user_has_own_key,
-            valve_name="model",
-        )
-        api_key = self.user_valves.api_key or self.valves.api_key
+            self.log(
+                f"using zero config backend: url={api_url}, model={model_name}",
+                level="debug",
+            )
+
+        else:
+            # Standard Mode: resolve via Valves (Original Logic)
+            user_has_own_key = bool(
+                self.user_valves.api_key and self.user_valves.api_key.strip()
+            )
+
+            api_url = self.get_restricted_user_valve(
+                user_valve_value=self.user_valves.openai_api_url,
+                admin_fallback=self.valves.openai_api_url,
+                authorization_check=user_has_own_key,
+                valve_name="openai_api_url",
+            ).rstrip("/")
+
+            model_name = self.get_restricted_user_valve(
+                user_valve_value=self.user_valves.model,
+                admin_fallback=self.valves.model,
+                authorization_check=user_has_own_key,
+                valve_name="model",
+            )
+
+            api_key = self.user_valves.api_key or self.valves.api_key
+        # -------------------------------
 
         if "gpt-5" in model_name:
             temperature = 1.0
@@ -1131,6 +1175,8 @@ class Filter:
         messages: list[dict[str, Any]],
         user: UserModel,
         emitter: Callable[[Any], Awaitable[None]],
+        override_api_url: Optional[str] = None,
+        override_model: Optional[str] = None,
     ) -> None:
         """Execute the auto-memory extraction and update flow."""
 
@@ -1138,6 +1184,33 @@ class Filter:
             self.log("need at least 2 messages for context", level="debug")
             return
         self.log(f"flow started. user ID: {user.id}", level="debug")
+
+        # --- RUNTIME CONFIGURATION CHECK ---
+        # 1. Check consistency for Zero Config Mode
+        # Determine if user wanted to use Ollama (User > Admin preference)
+        use_ollama = (
+            self.user_valves.use_ollama_backend
+            if self.user_valves.use_ollama_backend is not None
+            else self.valves.use_ollama_backend
+        )
+
+        # Case A: User enabled Zero Config, but Outlet failed to find the internal URL
+        if use_ollama and not override_api_url:
+            msg = "Auto Memory Error: Zero Config enabled but internal Ollama URL could not be detected."
+            self.log(msg, level="error")
+            if self.user_valves.show_status:
+                await emit_status(msg, emitter=emitter, status="error")
+            return
+
+        # Case B: Standard Mode (No Zero Config), but API Key is missing
+        effective_api_key = self.user_valves.api_key or self.valves.api_key
+        if not override_api_url and not effective_api_key:
+            msg = "Auto Memory Setup: Configuration missing. Please set an OpenAI API Key or enable 'Use Ollama Backend'."
+            self.log(msg, level="warning")
+            if self.user_valves.show_status:
+                await emit_status(msg, emitter=emitter, status="error")
+            return
+        # -----------------------------------
 
         related_memories = await self.get_related_memories(messages=messages, user=user)
 
@@ -1153,6 +1226,8 @@ class Filter:
                 response_model=build_actions_request_model(
                     [m.mem_id for m in related_memories]
                 ),
+                override_api_url=override_api_url,
+                override_model=override_model,
             )
             self.log(f"action plan: {action_plan}", level="debug")
 
@@ -1291,6 +1366,7 @@ class Filter:
         body: dict,
         __event_emitter__: Callable[[Any], Awaitable[None]],
         __user__: Optional[dict] = None,
+        __request__: Optional[Request] = None,
     ) -> dict:
 
         self.log("outlet invoked")
@@ -1330,9 +1406,77 @@ class Filter:
             self.log("component was disabled by user, skipping", level="info")
             return body
 
+        # --- LOGIC: Determine Backend and Model ---
+
+        # 1. Determine if we should use Ollama Loopback
+        # User preference takes precedence if set, otherwise Admin default
+        use_ollama = self.valves.use_ollama_backend
+        if self.user_valves.use_ollama_backend is not None:
+            use_ollama = self.user_valves.use_ollama_backend
+
+        override_api_url = None
+        override_model = None
+
+        if use_ollama:
+            try:
+                # 2. Auto-detect Ollama URL
+                # We try multiple locations to be robust across OWUI versions
+                ollama_urls = []
+                if __request__:
+                    # Attempt 1: Direct attribute on state (Standard)
+                    ollama_urls = getattr(__request__.app.state, "OLLAMA_BASE_URLS", [])
+
+                    # Attempt 2: Inside config object (Alternative)
+                    if not ollama_urls and hasattr(__request__.app.state, "config"):
+                        ollama_urls = getattr(
+                            __request__.app.state.config, "OLLAMA_BASE_URLS", []
+                        )
+
+                    # Attempt 3: Fallback to direct dict access if state acts like dict (User report)
+                    if not ollama_urls and hasattr(__request__.app.state, "_state"):
+                        ollama_urls = __request__.app.state._state.get(
+                            "OLLAMA_BASE_URLS", []
+                        )
+
+                if ollama_urls:
+                    # Construct /v1 endpoint from the first configured Ollama URL
+                    # Handle case where it might not be a list (defensive)
+                    if isinstance(ollama_urls, str):
+                        base_url = ollama_urls.rstrip("/")
+                    else:
+                        base_url = ollama_urls[0].rstrip("/")
+
+                    override_api_url = f"{base_url}/v1"
+
+                    # 3. Determine Model for Ollama Mode
+                    if self.user_valves.ollama_fixed_model:
+                        override_model = self.user_valves.ollama_fixed_model
+                    elif self.valves.ollama_fixed_model:
+                        override_model = self.valves.ollama_fixed_model
+                    else:
+                        override_model = body.get("model")
+
+                    self.log(
+                        f"Zero Config Mode: using local Ollama {override_api_url} with model '{override_model}'",
+                        level="info",
+                    )
+                else:
+                    self.log(
+                        "use_ollama_backend is active but OLLAMA_BASE_URLS not found in request state",
+                        level="warning",
+                    )
+
+            except Exception as e:
+                self.log(f"Failed to auto-detect Ollama config: {e}", level="error")
+
+        # Start the background task with specific overrides
         _run_detached(
             self.auto_memory(
-                body.get("messages", []), user=user, emitter=__event_emitter__
+                body.get("messages", []),
+                user=user,
+                emitter=__event_emitter__,
+                override_api_url=override_api_url,
+                override_model=override_model,
             )
         )
 

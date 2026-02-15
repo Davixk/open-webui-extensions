@@ -44,9 +44,11 @@ Configure via the Open WebUI extension settings or directly in code:
 
 | Setting                       | Description                                                                                                                                                                                                                | Default                  |
 | ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ |
-| `openai_api_url`              | OpenAI-compatible API endpoint                                                                                                                                                                                             | `https://api.openai.com` |
-| `model`                       | LLM model for memory identification                                                                                                                                                                                        | `gpt-5-mini`             |
+| `openai_api_url`              | OpenAI-compatible API endpoint (used if Zero Config is disabled)                                                                                                                                                           | `https://api.openai.com` |
+| `model`                       | LLM model for memory identification (used if Zero Config is disabled)                                                                                                                                                      | `gpt-5-mini`             |
 | `api_key`                     | API key for the chosen endpoint                                                                                                                                                                                            | _(empty)_                |
+| `use_ollama_backend`          | **Zero Config Mode**: Automatically use the internal Ollama connection configured in Open WebUI. Ignores `openai_api_url` and `api_key`.                                                                                   | `false`                  |
+| `ollama_fixed_model`          | **Zero Config Model**: Force a specific local model (e.g. `qwen2.5:3b`) for memory tasks when using Ollama Backend. If empty, uses the current chat model (can be slow!).                                                  | _(empty)_                |
 | `related_memories_n`          | Number of related memories to check for consolidation                                                                                                                                                                      | `5`                      |
 | `related_memories_dist`       | Similarity distance threshold for related memories                                                                                                                                                                         | `0.75`                   |
 | `messages_to_consider`        | How many recent messages to consider (user+assistant)                                                                                                                                                                      | `4`                      |
@@ -61,6 +63,8 @@ Users can override settings individually:
 | ---------------------- | ---------------------------------------------- |
 | `enabled`              | Whether to enable Auto Memory for this user    |
 | `show_status`          | Display memory save status on UI               |
+| `use_ollama_backend`   | **Zero Config Override**: Set true to use internal Ollama backend regardless of global setting. |
+| `ollama_fixed_model`   | **Zero Config Model**: Force a specific local model (overrides global fixed model). |
 | `openai_api_url`       | User-specific API endpoint (overrides global)  |
 | `model`                | User-specific model (overrides global)         |
 | `api_key`              | User-specific API key (overrides global)       |
